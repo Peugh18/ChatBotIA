@@ -17,7 +17,7 @@ import UserMenuContent from '@/components/UserMenuContent.vue';
 import { getInitials } from '@/composables/useInitials';
 import type { BreadcrumbItem, NavItem } from '@/types';
 import { Link, usePage } from '@inertiajs/vue3';
-import { BookOpen, Folder, LayoutGrid, Menu, Search } from 'lucide-vue-next';
+import { BookOpen, Folder, LayoutGrid, Menu, Search, MessageSquare, Package, Tags, BarChart3 } from 'lucide-vue-next';
 import { computed } from 'vue';
 
 interface Props {
@@ -39,9 +39,24 @@ const activeItemStyles = computed(() => (url: string) => (isCurrentRoute(url) ? 
 
 const mainNavItems: NavItem[] = [
     {
-        title: 'Dashboard',
+        title: 'CRM / Chatbot',
+        href: '/crm',
+        icon: MessageSquare,
+    },
+    {
+        title: 'Inventario',
+        href: '/inventory',
+        icon: Package,
+    },
+    {
+        title: 'Categorías',
+        href: '/categories',
+        icon: Tags,
+    },
+    {
+        title: 'Dashboard de Ventas',
         href: '/dashboard',
-        icon: LayoutGrid,
+        icon: BarChart3,
     },
 ];
 
@@ -61,8 +76,8 @@ const rightNavItems: NavItem[] = [
 
 <template>
     <div>
-        <div class="border-b border-sidebar-border/80">
-            <div class="mx-auto flex h-16 items-center px-4 md:max-w-7xl">
+        <div class="border-b border-sidebar-border/80 bg-[#111b21] text-[#e9edef]">
+            <div class="flex h-16 items-center px-6 w-full">
                 <!-- Mobile Menu -->
                 <div class="lg:hidden">
                     <Sheet>
@@ -116,15 +131,16 @@ const rightNavItems: NavItem[] = [
                     <NavigationMenu class="ml-10 flex h-full items-stretch">
                         <NavigationMenuList class="flex h-full items-stretch space-x-2">
                             <NavigationMenuItem v-for="(item, index) in mainNavItems" :key="index" class="relative flex h-full items-center">
-                                <Link :href="item.href">
+                                <Link :href="item.href" class="h-full flex items-center">
                                     <NavigationMenuLink
                                         :class="[navigationMenuTriggerStyle(), activeItemStyles(item.href), 'h-9 cursor-pointer px-3']"
+                                        :active="isCurrentRoute(item.href)"
                                     >
                                         <component v-if="item.icon" :is="item.icon" class="mr-2 h-4 w-4" />
                                         {{ item.title }}
                                     </NavigationMenuLink>
                                 </Link>
-                                <div class="absolute bottom-0 left-0 h-0.5 w-full translate-y-px bg-black dark:bg-white"></div>
+                                <div v-if="isCurrentRoute(item.href)" class="absolute bottom-0 left-0 h-0.5 w-full bg-black dark:bg-white"></div>
                             </NavigationMenuItem>
                         </NavigationMenuList>
                     </NavigationMenu>
@@ -180,8 +196,8 @@ const rightNavItems: NavItem[] = [
             </div>
         </div>
 
-        <div v-if="props.breadcrumbs.length > 1" class="flex w-full border-b border-sidebar-border/70">
-            <div class="mx-auto flex h-12 w-full items-center justify-start px-4 text-neutral-500 md:max-w-7xl">
+        <div v-if="props.breadcrumbs.length > 1" class="flex w-full border-b border-sidebar-border/70 bg-[#0b141a]">
+            <div class="flex h-12 w-full items-center justify-start px-6 text-[#8696a0]">
                 <Breadcrumbs :breadcrumbs="breadcrumbs" />
             </div>
         </div>
