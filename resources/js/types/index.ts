@@ -1,4 +1,4 @@
-import type { LucideIcon } from 'lucide-vue-next';
+import type { LucideIcon } from 'lucide-react';
 
 export interface Auth {
     user: User;

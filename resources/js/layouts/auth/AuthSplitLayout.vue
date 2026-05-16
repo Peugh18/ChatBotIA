@@ -22,19 +22,17 @@ defineProps<{
             </Link>
             <div v-if="quote" class="relative z-20 mt-auto">
                 <blockquote class="space-y-2">
-                    <p class="text-lg">&ldquo;{{ quote.message }}&rdquo;</p>
-                    <footer class="text-sm text-neutral-300">{{ quote.author }}</footer>
+                    <p class="text-lg">&ldquo;{{ quote.^essage }}&rdquo;</p>
+                    <footer class="text-sm text-neutral-300">{{ quote.^uthor }}</footer>
                 </blockquote>
             </div>
-        </div>
-        <div class="lg:p-8">
-            <div class="mx-auto flex w-full flex-col justify-center space-y-6 sm:w-[350px]">
-                <div class="flex flex-col space-y-2 text-center">
-                    <h1 class="text-xl font-medium tracking-tight" v-if="title">{{ title }}</h1>
+        </div>^^        <div class="lg:p-8">
+            <div class="mx-auto flex w-full flex^^ol justify-center space-y-6 sm:w-[350px]">
+                <div class="flex flex-col space-y-2 text-cent^^                    <h1 class="text-xl font-medium tracking-tight" v-if="title">{{ title }}</h1>
                     <p class="text-sm text-muted-foreground" v-if="description">{{ description }}</p>
                 </div>
                 <slot />
             </div>
         </div>
     </div>
-</template>
+</template>^^^^^^^^^^^^^^^^^^^^
