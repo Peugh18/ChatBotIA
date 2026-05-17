@@ -14,74 +14,102 @@ class GeminiService
     public function __construct()
     {
         $this->apiKey = config('services.gemini.api_key');
-        $this->model = config('services.gemini.model', 'gemini-1.5-flash');
+        $this->model  = config('services.gemini.model', 'gemini-2.5-flash');
     }
 
-    public function analyzeImage($imageBase64, $prompt)
+    /**
+     * Single-turn chat (kept for backwards compatibility).
+     */
+    public function chat($prompt, $systemInstruction = null): ?string
     {
-        try {
-            $url = "{$this->baseUrl}/{$this->model}:generateContent?key={$this->apiKey}";
-
-            $response = Http::post($url, [
-                'contents' => [
-                    [
-                        'parts' => [
-                            ['text' => $prompt],
-                            [
-                                'inline_data' => [
-                                    'mime_type' => 'image/jpeg',
-                                    'data' => $imageBase64
-                                ]
-                            ]
-                        ]
-                    ]
-                ]
-            ]);
-
-            if (!$response->successful()) {
-                Log::error('Gemini API Error (Analyze): ' . $response->status() . ' - ' . $response->body());
-                return null;
-            }
-            return $response->json()['candidates'][0]['content']['parts'][0]['text'] ?? null;
-        } catch (\Exception $e) {
-            Log::error('Gemini Service Exception: ' . $e->getMessage());
-            return null;
-        }
+        return $this->chatWithHistory(
+            [['role' => 'user', 'parts' => [['text' => $prompt]]]],
+            $systemInstruction
+        );
     }
 
-    public function chat($prompt, $systemInstruction = null)
+    /**
+     * Multi-turn chat with full conversation history.
+     */
+    public function chatWithHistory(array $history, string $systemPrompt = null): ?string
     {
-        try {
-            $url = "{$this->baseUrl}/{$this->model}:generateContent?key={$this->apiKey}";
+        $data = [
+            'contents'         => $history,
+            'generationConfig' => [
+                'responseMimeType' => 'application/json',
+            ],
+        ];
 
-            $data = [
-                'contents' => [
-                    [
-                        'parts' => [
-                            ['text' => $prompt]
-                        ]
-                    ]
-                ]
+        if ($systemPrompt) {
+            $data['system_instruction'] = [
+                'parts' => [['text' => $systemPrompt]]
             ];
-
-            if ($systemInstruction) {
-                $data['system_instruction'] = [
-                    'parts' => [
-                        ['text' => $systemInstruction]
-                    ]
-                ];
-            }
-
-            $response = Http::post($url, $data);
-
-            if (!$response->successful()) {
-                Log::error('Gemini API Error (Chat): ' . $response->status() . ' - ' . $response->body());
-                return null;
-            }
-            return $response->json()['candidates'][0]['content']['parts'][0]['text'] ?? null;
-        } catch (\Exception $e) {
-            Log::error('Gemini Service Exception: ' . $e->getMessage());
-            return null;
         }
+
+        $json = $this->postToGemini('generateContent', $data);
+
+        return $json['candidates'][0]['content']['parts'][0]['text'] ?? null;
+    }
+
+    /**
+     * Analyze an image alongside a text prompt.
+     */
+    public function analyzeImage(string $imageBase64, string $prompt): ?string
+    {
+        $data = [
+            'contents' => [[
+                'parts' => [
+                    ['text' => $prompt],
+                    ['inline_data' => ['mime_type' => 'image/jpeg', 'data' => $imageBase64]]
+                ]
+            ]]
+        ];
+
+        $json = $this->postToGemini('generateContent', $data);
+
+        return $json['candidates'][0]['content']['parts'][0]['text'] ?? null;
+    }
+
+    /**
+     * Robust HTTP POST wrapper with automatic Rate Limit (429) retries and exponential backoff.
+     */
+    protected function postToGemini(string $endpoint, array $data, int $maxRetries = 3, int $initialDelayMs = 1500): ?array
+    {
+        $url = "{$this->baseUrl}/{$this->model}:{$endpoint}?key={$this->apiKey}";
+
+        for ($attempt = 1; $attempt <= $maxRetries; $attempt++) {
+            try {
+                $response = Http::timeout(30)->post($url, $data);
+
+                if ($response->successful()) {
+                    return $response->json();
+                }
+
+                $status = $response->status();
+                $body   = $response->body();
+
+                Log::warning("Gemini API Attempt {$attempt} failed with status {$status}: {$body}");
+
+                if ($status === 429) {
+                    $delay = $initialDelayMs * pow(2, $attempt - 1);
+                    Log::info("Gemini Rate Limit (429) detected. Waiting " . ($delay / 1000) . " seconds before retry (Attempt {$attempt}/{$maxRetries})...");
+                    usleep($delay * 1000);
+                    continue;
+                }
+
+                // If not 429, don't waste time retrying permanent failures (e.g. 400 bad schema, 403 invalid key)
+                Log::error("Gemini API permanent failure: Status {$status} - Body: {$body}");
+                break;
+
+            } catch (\Exception $e) {
+                Log::error("Gemini API Exception on attempt {$attempt}: " . $e->getMessage());
+                if ($attempt < $maxRetries) {
+                    $delay = $initialDelayMs * pow(2, $attempt - 1);
+                    usleep($delay * 1000);
+                }
+            }
+        }
+
+        return null;
     }
 }

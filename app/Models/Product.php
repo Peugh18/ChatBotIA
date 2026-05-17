@@ -7,13 +7,15 @@ use Illuminate\Database\Eloquent\Model;
 class Product extends Model
 {
     protected $fillable = [
-        'category_id', 'name', 'sku', 'description', 
-        'price', 'image_url', 'ai_tags'
+        'category_id', 'name', 'sku', 'description',
+        'price', 'image_url', 'ai_tags', 'sales_count', 'discount_percent'
     ];
 
     protected $casts = [
-        'ai_tags' => 'array',
-        'price' => 'decimal:2'
+        'ai_tags'          => 'array',
+        'price'            => 'decimal:2',
+        'discount_percent' => 'decimal:2',
+        'sales_count'      => 'integer',
     ];
 
     public function category()

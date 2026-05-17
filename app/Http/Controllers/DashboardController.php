@@ -2,14 +2,22 @@
 
 namespace App\Http\Controllers;
 
+use App\Events\ClientStatusUpdated;
+use App\Events\MessageReceived;
 use App\Models\Client;
+use App\Models\ClientNote;
 use App\Models\Message;
-use App\Models\Product;
-use App\Models\ProductVariant;
 use App\Models\Order;
 use App\Models\OrderItem;
+use App\Models\Product;
+use App\Models\ProductVariant;
+use App\Models\QuickReply;
+use App\Models\Tag;
+use App\Models\User;
 use App\Services\WhatsAppService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Inertia\Inertia;
 
 class DashboardController extends Controller
@@ -23,31 +31,85 @@ class DashboardController extends Controller
 
     public function index()
     {
-        $clients = Client::orderBy('last_interaction_at', 'desc')->get();
-        $products = Product::with(['variants', 'category'])->latest()->get();
+        $clients      = Client::with('tags')->orderBy('last_interaction_at', 'desc')->get();
+        $products     = Product::with(['variants', 'category'])->latest()->get();
+        $allTags      = Tag::orderBy('name')->get();
+        $quickReplies = QuickReply::orderBy('shortcut')->get();
+        $users        = User::orderBy('name')->get(['id', 'name']);
 
         return Inertia::render('Dashboard', [
-            'clients' => $clients,
-            'products' => $products
+            'clients'      => $clients,
+            'products'     => $products,
+            'allTags'      => $allTags,
+            'quickReplies' => $quickReplies,
+            'users'        => $users,
         ]);
     }
 
     public function show(Client $client)
     {
+        $client->load(['tags', 'notes' => fn($q) => $q->latest(), 'notes.user', 'assignedUser']);
+
         $messages = Message::where('client_id', $client->id)
             ->orderBy('created_at', 'asc')
             ->get();
 
         $products = Product::with(['variants', 'category'])->latest()->get();
-        $orders = Order::where('client_id', $client->id)->with('items.variant.product')->latest()->get();
+        $orders   = Order::where('client_id', $client->id)->with('items.variant.product')->latest()->get();
 
         return Inertia::render('Dashboard', [
-            'clients' => Client::orderBy('last_interaction_at', 'desc')->get(),
+            'clients'        => Client::with('tags')->orderBy('last_interaction_at', 'desc')->get(),
             'selectedClient' => $client,
-            'messages' => $messages,
-            'products' => $products,
-            'orders' => $orders
+            'messages'       => $messages,
+            'products'       => $products,
+            'orders'         => $orders,
+            'allTags'        => Tag::orderBy('name')->get(),
+            'quickReplies'   => QuickReply::orderBy('shortcut')->get(),
+            'users'          => User::orderBy('name')->get(['id', 'name']),
+            'clientNotes'    => $client->notes,
         ]);
+    }
+
+    /** Send a manual WhatsApp message from the CRM (vendor speaking). */
+    public function sendMessage(Request $request, Client $client)
+    {
+        $validated = $request->validate([
+            'body' => 'required|string|max:4000',
+        ]);
+
+        try {
+            $this->whatsAppService->sendMessage($client->phone, $validated['body']);
+            $msg = Message::create([
+                'client_id' => $client->id,
+                'from_me'   => true,
+                'body'      => $validated['body'],
+                'type'      => 'text',
+            ]);
+            broadcast(new MessageReceived($msg))->toOthers();
+            broadcast(new ClientStatusUpdated($client->fresh()))->toOthers();
+            $client->update(['last_interaction_at' => now()]);
+
+            if (Schema::hasColumn('clients', 'first_response_at') && empty($client->first_response_at)) {
+                $client->forceFill(['first_response_at' => now()])->save();
+            }
+        } catch (\Throwable $e) {
+            \Log::error('CRM sendMessage failed: ' . $e->getMessage());
+            return back()->withErrors(['message' => 'No se pudo enviar el mensaje. Revisa la consola.']);
+        }
+
+        return back()->with('success', 'Mensaje enviado.');
+    }
+
+    /** Assign (or unassign with null) a vendor user to a client. */
+    public function assign(Request $request, Client $client)
+    {
+        $validated = $request->validate([
+            'user_id' => 'nullable|exists:users,id',
+        ]);
+
+        $client->update(['assigned_user_id' => $validated['user_id'] ?? null]);
+
+        return back()->with('success', 'Cliente asignado.');
     }
 
     public function updateStatus(Request $request, Client $client)
@@ -58,6 +120,7 @@ class DashboardController extends Controller
         ]);
 
         $client->update($validated);
+        broadcast(new ClientStatusUpdated($client->fresh()))->toOthers();
 
         return back()->with('success', 'Estado del cliente actualizado.');
     }
@@ -65,17 +128,107 @@ class DashboardController extends Controller
     public function sales()
     {
         $orders = Order::with(['client', 'items.variant.product'])->latest()->get();
-        $totalSales = $orders->sum('total');
-        $totalOrders = $orders->count();
-        $completedOrders = $orders->where('status', 'COMPLETADA')->count();
-        $pendingOrders = $orders->where('status', 'PENDIENTE')->count();
+
+        // ── KPIs primarios ──────────────────────────────────────────────────
+        $totalSales      = (float) $orders->sum('total');
+        $totalOrders     = $orders->count();
+        $completedOrders = $orders->whereIn('status', ['PAGADO', 'ENTREGADO', 'PAGO RECIBIDO'])->count();
+        $pendingOrders   = $orders->whereIn('status', ['PENDIENTE', 'ENVIADO'])->count();
+
+        // Average Order Value
+        $aov = $totalOrders > 0 ? round($totalSales / $totalOrders, 2) : 0;
+
+        // ── Repeat-buyer rate ────────────────────────────────────────────────
+        $clientsWithAnyOrder    = Client::has('orders')->count();
+        $clientsWithMultiple    = Client::has('orders', '>=', 2)->count();
+        $repeatRate             = $clientsWithAnyOrder > 0
+            ? round(($clientsWithMultiple / $clientsWithAnyOrder) * 100, 1)
+            : 0;
+
+        // ── Conversion funnel ────────────────────────────────────────────────
+        $funnel = [
+            ['stage' => 'Nuevos',          'count' => Client::where('status', 'NUEVO')->count()],
+            ['stage' => 'Interesados',     'count' => Client::where('status', 'INTERESADO')->count()],
+            ['stage' => 'Consultando',     'count' => Client::where('status', 'CONSULTANDO')->count()],
+            ['stage' => 'Esperando Pago',  'count' => Client::where('status', 'ESPERANDO PAGO')->count()],
+            ['stage' => 'Pago Recibido',   'count' => Client::where('status', 'PAGO RECIBIDO')->count()],
+            ['stage' => 'Finalizado',      'count' => Client::whereIn('status', ['FINALIZADO', 'VENTA CUMPLIDA'])->count()],
+        ];
+
+        $totalClients     = Client::count();
+        $convertedClients = Client::whereIn('status', ['ESPERANDO PAGO', 'PAGO RECIBIDO', 'ENTREGADO', 'FINALIZADO', 'VENTA CUMPLIDA'])->count();
+        $conversionRate   = $totalClients > 0 ? round(($convertedClients / $totalClients) * 100, 1) : 0;
+
+        // ── Revenue por día (últimos 14 días) ────────────────────────────────
+        $since = now()->subDays(13)->startOfDay();
+        $byDay = Order::where('created_at', '>=', $since)
+            ->selectRaw('DATE(created_at) as day, SUM(total) as revenue, COUNT(*) as orders_count')
+            ->groupBy('day')
+            ->orderBy('day')
+            ->get()
+            ->keyBy('day');
+
+        $revenueSeries = [];
+        for ($i = 0; $i < 14; $i++) {
+            $day = now()->subDays(13 - $i)->format('Y-m-d');
+            $revenueSeries[] = [
+                'day'     => $day,
+                'revenue' => (float) ($byDay[$day]->revenue ?? 0),
+                'orders'  => (int)   ($byDay[$day]->orders_count ?? 0),
+            ];
+        }
+
+        // ── Tiempo de primera respuesta (TFR) ────────────────────────────────
+        // Promedia minutos entre creación del cliente y first_response_at.
+        $tfrMinutes = null;
+        if (Schema::hasColumn('clients', 'first_response_at')) {
+            $tfrMinutes = (float) DB::table('clients')
+                ->whereNotNull('first_response_at')
+                ->selectRaw('AVG(TIMESTAMPDIFF(MINUTE, created_at, first_response_at)) as avg_min')
+                ->value('avg_min');
+            $tfrMinutes = $tfrMinutes ? round($tfrMinutes, 1) : null;
+        }
+
+        // ── Leads calientes (score >= 70 + status no cerrado) ────────────────
+        $hotLeads = [];
+        if (Schema::hasColumn('clients', 'lead_score')) {
+            $hotLeads = Client::where('lead_score', '>=', 70)
+                ->whereNotIn('status', ['FINALIZADO', 'VENTA CUMPLIDA'])
+                ->orderByDesc('lead_score')
+                ->limit(10)
+                ->get(['id', 'name', 'phone', 'status', 'lead_score', 'last_interaction_at']);
+        }
+
+        // ── Top productos ───────────────────────────────────────────────────
+        $topProducts = Product::with('variants')
+            ->orderByDesc('sales_count')
+            ->limit(5)
+            ->get()
+            ->map(fn($p) => [
+                'name'        => $p->name,
+                'sales_count' => $p->sales_count,
+                'price'       => $p->price,
+                'stock'       => $p->variants->sum('stock'),
+            ]);
+
+        // ── Salud del stock: variantes en cero o bajo ────────────────────────
+        $lowStockCount = ProductVariant::where('stock', '<', 3)->count();
 
         return Inertia::render('SalesDashboard', [
-            'orders' => $orders,
-            'totalSales' => $totalSales,
-            'totalOrders' => $totalOrders,
-            'completedOrders' => $completedOrders,
-            'pendingOrders' => $pendingOrders
+            'orders'                  => $orders,
+            'totalSales'              => $totalSales,
+            'totalOrders'             => $totalOrders,
+            'completedOrders'         => $completedOrders,
+            'pendingOrders'           => $pendingOrders,
+            'aov'                     => $aov,
+            'repeatRate'              => $repeatRate,
+            'funnel'                  => $funnel,
+            'conversionRate'          => $conversionRate,
+            'topProducts'             => $topProducts,
+            'revenueSeries'           => $revenueSeries,
+            'firstResponseAvgMinutes' => $tfrMinutes,
+            'hotLeads'                => $hotLeads,
+            'lowStockCount'           => $lowStockCount,
         ]);
     }
 
@@ -113,8 +266,14 @@ class DashboardController extends Controller
             'price' => $variant->product->price
         ]);
 
-        // 3. Decrement variant stock
+        // 3. Decrement variant stock + increment product sales counter
         $variant->decrement('stock', $validated['quantity']);
+        $variant->product->increment('sales_count', $validated['quantity']);
+
+        // Maintain client lifetime value
+        if (Schema::hasColumn('clients', 'lifetime_value')) {
+            $client->increment('lifetime_value', $order->total);
+        }
 
         // 4. If status is COMPLETADA, let's also update the client status to VENTA CUMPLIDA!
         if ($validated['status'] === 'COMPLETADA') {
