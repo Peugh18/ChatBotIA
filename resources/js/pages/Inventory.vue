@@ -18,6 +18,8 @@ interface Product {
     sku: string;
     description: string;
     price: number;
+    discount_percent: number | null;
+    sales_count: number;
     image_url: string;
     ai_tags: string[];
     category: { id: number; name: string };
@@ -51,6 +53,7 @@ const form = useForm({
     sku: '',
     description: '',
     price: '',
+    discount_percent: '' as string,
     category_id: '',
     ai_tags: [] as string[],
     colors: [] as any[],
@@ -63,6 +66,7 @@ function openModal(product?: Product) {
         form.sku = product.sku;
         form.description = product.description;
         form.price = String(product.price);
+        form.discount_percent = product.discount_percent != null ? String(product.discount_percent) : '';
         form.category_id = String(product.category.id);
         tagsInput.value = product.ai_tags?.join(', ') || '';
         
@@ -197,7 +201,12 @@ function deleteProduct(id: number) {
                                 <h3 class="font-semibold text-base leading-tight text-[#e9edef]">{{ product.name }}</h3>
                                 <p class="text-xs text-[#8696a0]">SKU: {{ product.sku }}</p>
                             </div>
-                            <p class="text-lg font-bold text-[#00a884]">S/. {{ Number(product.price).toFixed(2) }}</p>
+                            <p class="text-lg font-bold text-[#00a884]">S/. {{ Number(product.price).toFixed(2) }}
+                                <span v-if="product.discount_percent" class="ml-2 text-xs font-semibold bg-[#f15c6d]/20 text-[#f15c6d] px-2 py-0.5 rounded-full">
+                                    -{{ product.discount_percent }}% OFF
+                                </span>
+                            </p>
+                            <p class="text-xs text-[#00a884]/70" v-if="product.sales_count > 0">🔥 {{ product.sales_count }} vendidos</p>
                             <p class="text-xs text-[#8696a0] line-clamp-2">{{ product.description }}</p>
 
                             <!-- AI Tags -->
@@ -294,6 +303,19 @@ function deleteProduct(id: number) {
                                     <option value="" class="bg-[#111b21]">Selecciona una categoría</option>
                                     <option v-for="cat in categories" :key="cat.id" :value="cat.id" class="bg-[#111b21]">{{ cat.name }}</option>
                                 </select>
+                            </div>
+                            <!-- Discount Field -->
+                            <div class="col-span-2">
+                                <label class="mb-1 block text-sm font-medium text-[#8696a0]">
+                                    Descuento (%) <span class="text-xs text-[#8696a0]/60">— opcional, la IA lo mostrará automáticamente</span>
+                                </label>
+                                <div class="flex items-center gap-2">
+                                    <input v-model="form.discount_percent" type="number" step="0.01" min="0" max="100" placeholder="0" class="w-32 rounded-lg border border-[#202c33] bg-[#0b141a] px-3 py-2 text-sm text-[#e9edef] focus:ring-1 focus:ring-[#f15c6d] focus:border-[#f15c6d] placeholder:text-[#8696a0]/50" />
+                                    <span class="text-sm text-[#8696a0]">%</span>
+                                    <span v-if="form.discount_percent && form.price" class="text-xs text-[#f15c6d] font-semibold">
+                                        Precio final: S/ {{ (Number(form.price) * (1 - Number(form.discount_percent)/100)).toFixed(2) }}
+                                    </span>
+                                </div>
                             </div>
                             <div class="col-span-2">
                                 <label class="mb-1 block text-sm font-medium text-[#8696a0]">Descripción Detallada *</label>

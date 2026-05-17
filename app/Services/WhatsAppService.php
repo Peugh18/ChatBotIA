@@ -109,6 +109,88 @@ class WhatsAppService
         }
     }
 
+    /**
+     * Send a WhatsApp List Message (dropdown menu with up to 10 sections, 10 rows each).
+     */
+    public function sendListMessage($to, string $bodyText, string $buttonLabel, array $sections)
+    {
+        try {
+            if (empty($bodyText) || empty($sections)) {
+                Log::error('List message requires body text and sections');
+                return;
+            }
+
+            $url = "https://graph.facebook.com/{$this->apiVersion}/{$this->businessPhone}/messages";
+
+            $response = Http::withToken($this->apiToken)->post($url, [
+                'messaging_product' => 'whatsapp',
+                'to' => $to,
+                'type' => 'interactive',
+                'interactive' => [
+                    'type' => 'list',
+                    'body' => ['text' => $bodyText],
+                    'action' => [
+                        'button' => mb_substr($buttonLabel, 0, 20),
+                        'sections' => $sections,
+                    ],
+                ],
+            ]);
+
+            if ($response->successful()) {
+                Log::info('List message sent successfully');
+            } else {
+                Log::error('List message failed: ' . $response->body());
+            }
+        } catch (\Exception $e) {
+            Log::error('List message exception: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Send a product card with image header + reply buttons.
+     * Simulates Single Product Message without needing Meta Commerce Catalog.
+     */
+    public function sendProductCard($to, string $productName, string $description, ?string $imageUrl, array $buttons)
+    {
+        try {
+            if (empty($productName) || empty($buttons)) {
+                Log::error('Product card requires name and buttons');
+                return;
+            }
+
+            $url = "https://graph.facebook.com/{$this->apiVersion}/{$this->businessPhone}/messages";
+
+            $payload = [
+                'messaging_product' => 'whatsapp',
+                'to' => $to,
+                'type' => 'interactive',
+                'interactive' => [
+                    'type' => 'button',
+                    'body' => ['text' => $description],
+                    'footer' => ['text' => 'Roma Store ✨'],
+                    'action' => ['buttons' => $buttons],
+                ],
+            ];
+
+            if ($imageUrl) {
+                $payload['interactive']['header'] = [
+                    'type' => 'image',
+                    'image' => ['link' => $imageUrl],
+                ];
+            }
+
+            $response = Http::withToken($this->apiToken)->post($url, $payload);
+
+            if ($response->successful()) {
+                Log::info('Product card sent successfully');
+            } else {
+                Log::error('Product card failed: ' . $response->body());
+            }
+        } catch (\Exception $e) {
+            Log::error('Product card exception: ' . $e->getMessage());
+        }
+    }
+
     public function sendMediaMessage($to, $type, $mediaUrl, $caption = null)
     {
         try {

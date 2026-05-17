@@ -1,7 +1,17 @@
 <script setup lang="ts">
 import { Head, Link, router } from '@inertiajs/vue3';
-import { ref, computed } from 'vue';
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import AppLayout from '@/layouts/AppLayout.vue';
+import echo from '@/echo';
+
+interface Tag { id: number; name: string; color: string }
+interface AssignedUser { id: number; name: string }
+interface ClientNote {
+    id: number;
+    body: string;
+    created_at: string;
+    user?: { id: number; name: string } | null;
+}
 
 interface Client {
     id: number;
@@ -10,7 +20,20 @@ interface Client {
     status: string;
     priority: 'ALTA' | 'MEDIA' | 'BAJA';
     last_interaction_at: string;
+    assigned_user_id?: number | null;
+    assigned_user?: AssignedUser | null;
+    lead_score?: number;
+    tags?: Tag[];
 }
+
+interface QuickReply {
+    id: number;
+    shortcut: string;
+    title: string;
+    body: string;
+}
+
+interface User { id: number; name: string }
 
 interface Message {
     id: number;
@@ -63,6 +86,10 @@ const props = defineProps<{
     messages?: Message[];
     products?: Product[];
     orders?: Order[];
+    allTags?: Tag[];
+    quickReplies?: QuickReply[];
+    users?: User[];
+    clientNotes?: ClientNote[];
 }>();
 
 const selectedProductId = ref<number | null>(null);
@@ -113,6 +140,105 @@ function updateClientStatus(status: string) {
 
 const search = ref('');
 const messageInput = ref('');
+const noteInput = ref('');
+const newTagName = ref('');
+const newTagColor = ref('#00a884');
+const showQuickReplies = ref(false);
+
+// ── Send manual WhatsApp message from CRM ────────────────────────────────────
+function sendManualMessage() {
+    const body = messageInput.value.trim();
+    if (!body || !props.selectedClient) return;
+    router.post(route('crm.client.send', props.selectedClient.id), { body }, {
+        preserveScroll: true,
+        onSuccess: () => { messageInput.value = ''; showQuickReplies.value = false; },
+        onError: (errs) => { alert(errs.body || errs.message || 'No se pudo enviar.'); },
+    });
+}
+
+function onMessageInputKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendManualMessage();
+    } else if (e.key === 'Escape') {
+        showQuickReplies.value = false;
+    }
+}
+
+watch(messageInput, (val) => {
+    showQuickReplies.value = val.trim().startsWith('/') && val.length >= 1;
+});
+
+const filteredQuickReplies = computed(() => {
+    const q = messageInput.value.trim().toLowerCase();
+    if (!q.startsWith('/')) return [];
+    const needle = q.slice(1);
+    return (props.quickReplies || []).filter(qr =>
+        qr.shortcut.toLowerCase().includes(needle) ||
+        qr.title.toLowerCase().includes(needle)
+    );
+});
+
+function applyQuickReply(qr: QuickReply) {
+    messageInput.value = qr.body;
+    showQuickReplies.value = false;
+    nextTick(() => {
+        const el = document.getElementById('crm-message-input') as HTMLInputElement | null;
+        el?.focus();
+    });
+}
+
+// ── Internal notes ───────────────────────────────────────────────────────────
+function addNote() {
+    const body = noteInput.value.trim();
+    if (!body || !props.selectedClient) return;
+    router.post(route('crm.notes.store', props.selectedClient.id), { body }, {
+        preserveScroll: true,
+        onSuccess: () => { noteInput.value = ''; },
+    });
+}
+
+function deleteNote(id: number) {
+    if (!confirm('¿Eliminar esta nota?')) return;
+    router.delete(route('crm.notes.destroy', id), { preserveScroll: true });
+}
+
+// ── Tags ────────────────────────────────────────────────────────────────────
+function toggleTag(tagId: number) {
+    if (!props.selectedClient) return;
+    router.post(route('crm.client.tags.toggle', props.selectedClient.id), { tag_id: tagId }, {
+        preserveScroll: true,
+    });
+}
+
+function createTag() {
+    const name = newTagName.value.trim();
+    if (!name) return;
+    router.post(route('tags.store'), { name, color: newTagColor.value }, {
+        preserveScroll: true,
+        onSuccess: () => { newTagName.value = ''; },
+        onError: (errs) => { alert(errs.name || 'No se pudo crear la etiqueta.'); },
+    });
+}
+
+function clientHasTag(tagId: number) {
+    return props.selectedClient?.tags?.some(t => t.id === tagId) ?? false;
+}
+
+// ── Assignment ──────────────────────────────────────────────────────────────
+function assignUser(userId: number | null) {
+    if (!props.selectedClient) return;
+    router.post(route('crm.client.assign', props.selectedClient.id), { user_id: userId }, {
+        preserveScroll: true,
+    });
+}
+
+function formatDateTime(dt: string) {
+    if (!dt) return '';
+    const d = new Date(dt);
+    return d.toLocaleDateString('es-PE', { day: '2-digit', month: '2-digit' }) +
+        ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
 
 const statusColors: Record<string, string> = {
     'NUEVO': 'bg-blue-500',
@@ -135,6 +261,68 @@ const filteredClients = computed(() =>
     )
 );
 
+const needsAttentionCount = computed(() =>
+    (props.clients || []).filter(c => c.status === 'NECESITA ASESOR').length
+);
+
+// ── Real-time via Laravel Reverb ───────────────────────────────────────────
+const localMessages = ref<Message[]>(props.messages || []);
+watch(() => props.messages, (val) => { localMessages.value = val || []; }, { deep: true });
+
+function listenToClient(clientId: number) {
+    return echo
+        .private(`client.${clientId}`)
+        .listen('.message.received', (e: any) => {
+            if (!e?.message) return;
+            localMessages.value.push(e.message);
+            nextTick(() => scrollToBottom());
+        });
+}
+
+let dashboardChannel: any = null;
+
+onMounted(() => {
+    // Listen to CRM dashboard for status / priority changes on any client
+    dashboardChannel = echo
+        .private('crm-dashboard')
+        .listen('.client.updated', (e: any) => {
+            if (!e?.client) return;
+            const idx = (props.clients || []).findIndex((c: Client) => c.id === e.client.id);
+            if (idx !== -1) {
+                Object.assign(props.clients[idx], e.client);
+            }
+        });
+
+    // If a client is already selected, listen to its channel
+    if (props.selectedClient) {
+        listenToClient(props.selectedClient.id);
+    }
+});
+
+onUnmounted(() => {
+    if (dashboardChannel) {
+        echo.private('crm-dashboard').stopListening('.client.updated');
+    }
+});
+
+// Watch selectedClient changes to subscribe/unsubscribe
+let activeClientChannel: any = null;
+watch(() => props.selectedClient, (client) => {
+    if (activeClientChannel) {
+        echo.leave(`client.${activeClientChannel}`);
+        activeClientChannel = null;
+    }
+    if (client) {
+        listenToClient(client.id);
+        activeClientChannel = client.id;
+    }
+});
+
+function scrollToBottom() {
+    const el = document.getElementById('chat-messages-container');
+    if (el) el.scrollTop = el.scrollHeight;
+}
+
 function formatTime(dt: string) {
     if (!dt) return '';
     return new Date(dt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -154,6 +342,13 @@ function formatTime(dt: string) {
             <div class="flex h-[60px] items-center justify-between bg-[#202c33] px-4 py-2">
                 <div class="flex h-10 w-10 items-center justify-center rounded-full bg-[#374045]">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-[#e9edef]" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5.121 17.804A8.966 8.966 0 0112 15c2.34 0 4.47.895 6.056 2.357M12 11a4 4 0 100-8 4 4 0 000 8z" /></svg>
+                </div>
+                <div v-if="needsAttentionCount > 0" class="flex items-center gap-2 rounded-full bg-[#ef4444]/20 px-3 py-1 animate-pulse">
+                    <span class="relative flex h-3 w-3">
+                        <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#ef4444] opacity-75"></span>
+                        <span class="relative inline-flex h-3 w-3 rounded-full bg-[#ef4444]"></span>
+                    </span>
+                    <span class="text-xs font-bold text-[#ef4444]">{{ needsAttentionCount }} necesitan atención</span>
                 </div>
             </div>
 
@@ -182,6 +377,10 @@ function formatTime(dt: string) {
                     <div class="relative mr-3 flex h-12 w-12 items-center justify-center rounded-full bg-[#374045]">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-7 w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5.121 17.804A8.966 8.966 0 0112 15c2.34 0 4.47.895 6.056 2.357M12 11a4 4 0 100-8 4 4 0 000 8z" /></svg>
                         <span class="absolute bottom-0 right-0 text-[10px]">{{ priorityIcons[client.priority] }}</span>
+                        <span v-if="client.status === 'NECESITA ASESOR'" class="absolute -right-0.5 -top-0.5 flex h-4 w-4">
+                            <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#ef4444] opacity-75"></span>
+                            <span class="relative inline-flex h-4 w-4 rounded-full bg-[#ef4444]"></span>
+                        </span>
                     </div>
                     <div class="min-w-0 flex-1">
                         <div class="flex items-baseline justify-between">
@@ -196,6 +395,13 @@ function formatTime(dt: string) {
                             <div v-if="client.priority === 'ALTA'" class="rounded-full bg-[#00a884] px-1.5 text-[10px] font-bold text-black">
                                 NUEVO
                             </div>
+                        </div>
+                        <div v-if="client.tags && client.tags.length > 0" class="mt-1 flex flex-wrap gap-1">
+                            <span v-for="t in client.tags.slice(0, 3)" :key="t.id"
+                                  :style="{ backgroundColor: t.color }"
+                                  class="rounded-full px-1.5 text-[9px] font-bold text-black">
+                                {{ t.name }}
+                            </span>
                         </div>
                     </div>
                 </Link>
@@ -217,13 +423,20 @@ function formatTime(dt: string) {
                             <h2 class="text-base font-medium leading-tight">{{ selectedClient.name || selectedClient.phone }}</h2>
                             <p class="text-[12px] text-[#8696a0]">{{ selectedClient.status }}</p>
                         </div>
+                        <div v-if="selectedClient.status === 'NECESITA ASESOR'" class="ml-4 flex items-center gap-2 rounded-full bg-[#ef4444]/20 px-3 py-1 animate-pulse">
+                            <span class="relative flex h-2.5 w-2.5">
+                                <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#ef4444] opacity-75"></span>
+                                <span class="relative inline-flex h-2.5 w-2.5 rounded-full bg-[#ef4444]"></span>
+                            </span>
+                            <span class="text-xs font-bold text-[#ef4444]">NECESITA ASESOR</span>
+                        </div>
                     </div>
                 </div>
 
                 <!-- Messages -->
-                <div class="z-10 flex flex-1 flex-col gap-2 overflow-y-auto p-6">
+                <div id="chat-messages-container" class="z-10 flex flex-1 flex-col gap-2 overflow-y-auto p-6">
                     <div
-                        v-for="msg in messages"
+                        v-for="msg in localMessages"
                         :key="msg.id"
                         class="relative max-w-[65%] rounded-lg p-2 text-sm shadow-sm"
                         :class="msg.from_me ? 'self-end rounded-tr-none bg-[#005c4b]' : 'self-start rounded-tl-none bg-[#202c33]'"
@@ -231,7 +444,6 @@ function formatTime(dt: string) {
                         <p class="pr-12">{{ msg.body }}</p>
                         <span class="absolute bottom-1 right-2 flex items-center text-[10px] text-[#8696a0]">
                             {{ formatTime(msg.created_at) }}
-                            <svg v-if="msg.from_me" xmlns="http://www.w3.org/2000/svg" class="ml-1 h-3 w-3 text-[#53bdeb]" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7M3 13l4 4L17 7" /></svg>
                         </span>
                     </div>
                 </div>
@@ -258,14 +470,42 @@ function formatTime(dt: string) {
                     </button>
                 </div>
 
-                <!-- Input -->
-                <div class="z-10 flex h-[62px] items-center gap-4 bg-[#202c33] px-4 py-2">
-                    <input
-                        v-model="messageInput"
-                        type="text"
-                        placeholder="Escribe un mensaje aquí"
-                        class="flex-1 rounded-lg border-none bg-[#2a3942] px-4 py-2 text-sm placeholder:text-[#8696a0] focus:ring-0"
-                    />
+                <!-- Input + Quick Replies dropdown -->
+                <div class="relative z-10 bg-[#202c33] px-4 py-2">
+                    <!-- Quick replies suggester -->
+                    <div v-if="showQuickReplies && filteredQuickReplies.length > 0"
+                         class="absolute bottom-full left-4 right-4 mb-2 max-h-64 overflow-y-auto rounded-xl border border-[#2a3942] bg-[#111b21] shadow-2xl">
+                        <div v-for="qr in filteredQuickReplies" :key="qr.id"
+                             @click="applyQuickReply(qr)"
+                             class="cursor-pointer border-b border-[#2a3942] px-4 py-3 hover:bg-[#202c33] last:border-0">
+                            <div class="flex items-baseline justify-between gap-2">
+                                <span class="font-mono text-xs text-[#00a884]">{{ qr.shortcut }}</span>
+                                <span class="text-xs font-semibold text-[#e9edef]">{{ qr.title }}</span>
+                            </div>
+                            <p class="mt-1 line-clamp-2 text-xs text-[#8696a0]">{{ qr.body }}</p>
+                        </div>
+                    </div>
+
+                    <div class="flex items-center gap-3">
+                        <input
+                            id="crm-message-input"
+                            v-model="messageInput"
+                            @keydown="onMessageInputKeydown"
+                            type="text"
+                            placeholder="Escribe un mensaje aquí (usa / para atajos)"
+                            class="flex-1 rounded-lg border-none bg-[#2a3942] px-4 py-2 text-sm placeholder:text-[#8696a0] focus:ring-0"
+                        />
+                        <button
+                            @click="sendManualMessage"
+                            :disabled="!messageInput.trim()"
+                            class="flex h-9 w-9 items-center justify-center rounded-full bg-[#00a884] text-black transition-all hover:bg-[#06cf9c] disabled:cursor-not-allowed disabled:opacity-40"
+                            title="Enviar"
+                        >
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
+                                <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+                            </svg>
+                        </button>
+                    </div>
                 </div>
             </div>
 
@@ -278,12 +518,16 @@ function formatTime(dt: string) {
                     </div>
                     <h3 class="text-lg font-bold truncate">{{ selectedClient.name || 'Cliente sin nombre' }}</h3>
                     <p class="text-sm text-[#8696a0] mt-0.5">{{ selectedClient.phone }}</p>
-                    
+                    <p v-if="selectedClient.lead_score && selectedClient.lead_score >= 70"
+                       class="mt-2 inline-flex items-center gap-1 rounded-full bg-[#f5b400]/20 px-2 py-0.5 text-xs font-bold text-[#f5b400]">
+                        🔥 Lead caliente — score {{ selectedClient.lead_score }}
+                    </p>
+
                     <!-- Client Status dropdown -->
                     <div class="mt-4">
                         <label class="block text-xs font-semibold text-[#8696a0] text-left mb-1.5">Estado del Cliente</label>
-                        <select 
-                            :value="selectedClient.status" 
+                        <select
+                            :value="selectedClient.status"
                             @change="updateClientStatus(($event.target as HTMLSelectElement).value)"
                             class="w-full rounded-lg bg-[#2a3942] border border-[#374045] py-1.5 px-3 text-sm text-[#e9edef] focus:ring-[#00a884] focus:border-[#00a884]"
                         >
@@ -296,6 +540,79 @@ function formatTime(dt: string) {
                             <option value="NECESITA ASESOR">🔴 NECESITA ASESOR</option>
                         </select>
                     </div>
+
+                    <!-- Assigned to -->
+                    <div class="mt-3">
+                        <label class="block text-xs font-semibold text-[#8696a0] text-left mb-1.5">Asignado a</label>
+                        <select
+                            :value="selectedClient.assigned_user_id ?? ''"
+                            @change="assignUser(($event.target as HTMLSelectElement).value ? Number(($event.target as HTMLSelectElement).value) : null)"
+                            class="w-full rounded-lg bg-[#2a3942] border border-[#374045] py-1.5 px-3 text-sm text-[#e9edef] focus:ring-[#00a884] focus:border-[#00a884]"
+                        >
+                            <option value="">— Sin asignar —</option>
+                            <option v-for="u in users" :key="u.id" :value="u.id">{{ u.name }}</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Tags -->
+                <div class="mb-5 rounded-xl bg-[#202c33] p-4 border border-[#2a3942]">
+                    <h4 class="text-sm font-bold uppercase tracking-wider text-[#00a884] mb-3">🏷️ Etiquetas</h4>
+
+                    <div class="flex flex-wrap gap-1.5 mb-3">
+                        <button
+                            v-for="tag in allTags" :key="tag.id"
+                            @click="toggleTag(tag.id)"
+                            :style="{ borderColor: tag.color, color: clientHasTag(tag.id) ? '#0b141a' : tag.color, backgroundColor: clientHasTag(tag.id) ? tag.color : 'transparent' }"
+                            class="rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-all hover:opacity-80"
+                        >
+                            {{ clientHasTag(tag.id) ? '✓ ' : '' }}{{ tag.name }}
+                        </button>
+                        <p v-if="!allTags || allTags.length === 0" class="text-xs text-[#8696a0]">Sin etiquetas creadas todavía.</p>
+                    </div>
+
+                    <div class="flex items-center gap-1.5">
+                        <input v-model="newTagName" type="text" placeholder="Nueva etiqueta"
+                               class="flex-1 rounded-md bg-[#2a3942] border border-[#374045] py-1 px-2 text-xs text-[#e9edef] focus:ring-[#00a884] focus:border-[#00a884]" />
+                        <input v-model="newTagColor" type="color"
+                               class="h-7 w-7 rounded cursor-pointer bg-transparent border border-[#374045]" />
+                        <button @click="createTag" class="rounded-md bg-[#00a884] px-2 py-1 text-xs font-bold text-black hover:bg-[#06cf9c]">+</button>
+                    </div>
+                </div>
+
+                <!-- Internal Notes -->
+                <div class="mb-5 rounded-xl bg-[#202c33] p-4 border border-[#2a3942]">
+                    <h4 class="text-sm font-bold uppercase tracking-wider text-[#00a884] mb-3">📝 Notas internas</h4>
+
+                    <div class="flex gap-2 mb-3">
+                        <textarea v-model="noteInput" rows="2" placeholder="Escribe una nota privada (solo el equipo la ve)"
+                                  class="flex-1 rounded-md bg-[#2a3942] border border-[#374045] py-1.5 px-2 text-xs text-[#e9edef] focus:ring-[#00a884] focus:border-[#00a884] resize-none"></textarea>
+                        <button @click="addNote" :disabled="!noteInput.trim()"
+                                class="self-start rounded-md bg-[#00a884] px-3 py-1.5 text-xs font-bold text-black hover:bg-[#06cf9c] disabled:opacity-40">
+                            Guardar
+                        </button>
+                    </div>
+
+                    <div v-if="clientNotes && clientNotes.length > 0" class="space-y-2 max-h-60 overflow-y-auto pr-1">
+                        <div v-for="n in clientNotes" :key="n.id"
+                             class="group rounded-md p-2 text-xs border"
+                             :class="n.user ? 'bg-[#2a3942]/60 border-[#374045]' : 'bg-[#1a3a5c]/30 border-[#53bdeb]/40'">
+                            <div class="flex items-start justify-between gap-2">
+                                <p class="whitespace-pre-wrap text-[#e9edef]">{{ n.body }}</p>
+                                <button @click="deleteNote(n.id)"
+                                        class="opacity-0 group-hover:opacity-100 text-[#f15c6d] text-[10px] transition">
+                                    ✕
+                                </button>
+                            </div>
+                            <p class="mt-1 text-[10px] flex items-center gap-1"
+                               :class="n.user ? 'text-[#8696a0]' : 'text-[#53bdeb]'">
+                                <span v-if="!n.user" class="font-bold">🤖 IA</span>
+                                <span v-else>{{ n.user.name }}</span>
+                                · {{ formatDateTime(n.created_at) }}
+                            </p>
+                        </div>
+                    </div>
+                    <p v-else class="text-xs text-[#8696a0] italic">Sin notas todavía.</p>
                 </div>
 
                 <!-- Create Direct Order (Venta Cumplida & Deduct Stock) -->
