@@ -186,7 +186,7 @@ class IntentDetector
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
-    protected function normalize(string $text): string
+    public function normalize(string $text): string
     {
         $text = mb_strtolower(trim($text), 'UTF-8');
         // collapse whitespace
