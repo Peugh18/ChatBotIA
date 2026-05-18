@@ -6,6 +6,7 @@ use App\Events\ClientStatusUpdated;
 use App\Events\MessageReceived;
 use App\Models\Client;
 use App\Models\ClientNote;
+use App\Models\DeliveryZone;
 use App\Models\Message;
 use App\Models\Order;
 use App\Models\OrderItem;
@@ -36,6 +37,7 @@ class DashboardController extends Controller
         $allTags      = Tag::orderBy('name')->get();
         $quickReplies = QuickReply::orderBy('shortcut')->get();
         $users        = User::orderBy('name')->get(['id', 'name']);
+        $deliveryZones = DeliveryZone::orderBy('district')->get();
 
         return Inertia::render('Dashboard', [
             'clients'      => $clients,
@@ -43,6 +45,7 @@ class DashboardController extends Controller
             'allTags'      => $allTags,
             'quickReplies' => $quickReplies,
             'users'        => $users,
+            'deliveryZones'=> $deliveryZones,
         ]);
     }
 
@@ -67,6 +70,7 @@ class DashboardController extends Controller
             'quickReplies'   => QuickReply::orderBy('shortcut')->get(),
             'users'          => User::orderBy('name')->get(['id', 'name']),
             'clientNotes'    => $client->notes,
+            'deliveryZones'  => DeliveryZone::orderBy('district')->get(),
         ]);
     }
 
@@ -305,5 +309,92 @@ class DashboardController extends Controller
         }
 
         return back()->with('success', 'Pedido creado con éxito y stock actualizado.');
+    }
+
+    public function approvePayment(Request $request, Client $client)
+    {
+        if ($client->status !== 'VERIFICARYAPE') {
+            return back()->withErrors(['message' => 'El cliente no está en estado VERIFICARYAPE.']);
+        }
+
+        $state = $client->state ?? ['step' => 'start'];
+        $state['payment_receipt_url'] = $client->payment_receipt_url;
+        $state['paid_amount'] = $client->paid_amount;
+
+        if (($state['shipping'] ?? null) === 'Motorizado') {
+            $state['step'] = 'collect_delivery_details_motorizado';
+        } else {
+            $state['step'] = 'collect_delivery_details_shalom';
+        }
+
+        $client->update([
+            'state' => $state,
+            'status' => 'PAGO RECIBIDO',
+            'priority' => 'ALTA',
+            'payment_verified_by' => auth()->id(),
+            'payment_verified_at' => now(),
+        ]);
+
+        broadcast(new ClientStatusUpdated($client->fresh()))->toOthers();
+
+        try {
+            $msg = "¡Tu pago fue verificado correctamente, hermosa! ✅\n\n"
+                 . "Ahora necesitamos tus datos de envío para programarlo. ";
+            if (($state['shipping'] ?? null) === 'Motorizado') {
+                $msg .= "Envíame: Nombre completo, celular, dirección escrita y tu ubicación en tiempo real. 🛵";
+            } else {
+                $msg .= "Envíame: Nombre completo, DNI, celular y sede exacta de Shalom. 🚚";
+            }
+            $this->whatsAppService->sendMessage($client->phone, $msg);
+            Message::create([
+                'client_id' => $client->id,
+                'from_me' => true,
+                'body' => $msg,
+                'type' => 'text',
+            ]);
+        } catch (\Exception $e) {
+            \Log::error("Error al enviar WhatsApp de aprobación: " . $e->getMessage());
+        }
+
+        return back()->with('success', 'Pago aprobado.');
+    }
+
+    public function rejectPayment(Request $request, Client $client)
+    {
+        if ($client->status !== 'VERIFICARYAPE') {
+            return back()->withErrors(['message' => 'El cliente no está en estado VERIFICARYAPE.']);
+        }
+
+        $state = $client->state ?? ['step' => 'start'];
+        $state['payment_receipt_url'] = null;
+        $state['paid_amount'] = null;
+
+        $client->update([
+            'state' => $state,
+            'status' => 'ESPERANDO PAGO',
+            'priority' => 'ALTA',
+            'payment_receipt_url' => null,
+            'paid_amount' => null,
+            'payment_verified_by' => auth()->id(),
+            'payment_verified_at' => now(),
+        ]);
+
+        broadcast(new ClientStatusUpdated($client->fresh()))->toOthers();
+
+        try {
+            $msg = "Hermosa, revisé tu comprobante y no pude validar el pago 😅\n\n"
+                 . "Por favor envíame una nueva captura clara del Yape para poder procesar tu pedido. 💕";
+            $this->whatsAppService->sendMessage($client->phone, $msg);
+            Message::create([
+                'client_id' => $client->id,
+                'from_me' => true,
+                'body' => $msg,
+                'type' => 'text',
+            ]);
+        } catch (\Exception $e) {
+            \Log::error("Error al enviar WhatsApp de rechazo: " . $e->getMessage());
+        }
+
+        return back()->with('success', 'Pago rechazado. Se solicitó nuevo comprobante.');
     }
 }

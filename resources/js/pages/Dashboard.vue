@@ -144,6 +144,7 @@ const noteInput = ref('');
 const newTagName = ref('');
 const newTagColor = ref('#00a884');
 const showQuickReplies = ref(false);
+const activeTab = ref('todos');
 
 // ── Send manual WhatsApp message from CRM ────────────────────────────────────
 function sendManualMessage() {
@@ -233,6 +234,22 @@ function assignUser(userId: number | null) {
     });
 }
 
+// ── Payment verification ────────────────────────────────────────────────────────
+function approvePayment() {
+    if (!props.selectedClient) return;
+    router.post(route('crm.client.payment.approve', props.selectedClient.id), {}, {
+        preserveScroll: true,
+    });
+}
+
+function rejectPayment() {
+    if (!props.selectedClient) return;
+    if (!confirm('¿Rechazar este pago? Se solicitará nuevo comprobante al cliente.')) return;
+    router.post(route('crm.client.payment.reject', props.selectedClient.id), {}, {
+        preserveScroll: true,
+    });
+}
+
 function formatDateTime(dt: string) {
     if (!dt) return '';
     const d = new Date(dt);
@@ -245,6 +262,7 @@ const statusColors: Record<string, string> = {
     'INTERESADO': 'bg-yellow-500',
     'CONSULTANDO': 'bg-orange-500',
     'ESPERANDO PAGO': 'bg-purple-500',
+    'VERIFICARYAPE': 'bg-amber-500',
     'PAGO RECIBIDO': 'bg-green-500',
     'NECESITA ASESOR': 'bg-red-500',
 };
@@ -256,14 +274,57 @@ const priorityIcons: Record<string, string> = {
 };
 
 const filteredClients = computed(() =>
-    (props.clients || []).filter(c =>
-        (c.name?.toLowerCase().includes(search.value.toLowerCase()) || c.phone.includes(search.value))
-    )
+    (props.clients || []).filter(c => {
+        const matchesSearch = c.name?.toLowerCase().includes(search.value.toLowerCase()) || c.phone.includes(search.value);
+        
+        if (!matchesSearch) return false;
+        
+        if (activeTab.value === 'todos') return true;
+        if (activeTab.value === 'nuevos') return c.status === 'NUEVO';
+        if (activeTab.value === 'por_responder') {
+            const lastMsgTime = c.last_customer_message_at ? new Date(c.last_customer_message_at).getTime() : 0;
+            const now = Date.now();
+            const hoursSinceLastMsg = (now - lastMsgTime) / (1000 * 60 * 60);
+            return hoursSinceLastMsg > 1 && !['FINALIZADO', 'VENTA CUMPLIDA', 'ABANDONADO'].includes(c.status);
+        }
+        if (activeTab.value === 'esperando_pago') return c.status === 'ESPERANDO PAGO';
+        if (activeTab.value === 'verificaryape') return c.status === 'VERIFICARYAPE';
+        if (activeTab.value === 'necesita_asesor') return c.status === 'NECESITA ASESOR';
+        
+        return true;
+    })
 );
 
 const needsAttentionCount = computed(() =>
     (props.clients || []).filter(c => c.status === 'NECESITA ASESOR').length
 );
+
+const paymentReceivedCount = computed(() =>
+    (props.clients || []).filter(c => c.status === 'PAGO RECIBIDO').length
+);
+
+const verifyYapeCount = computed(() =>
+    (props.clients || []).filter(c => c.status === 'VERIFICARYAPE').length
+);
+
+// ── Audio alerts: 1-shot on status transition ─────────────────────────────
+// Files live in /public/Audios/. Names contain spaces, so URL-encode.
+const asesorAudio = typeof Audio !== 'undefined'
+    ? new Audio('/Audios/' + encodeURIComponent('NECESITA ASESOR.mp3'))
+    : null;
+const yapeAudio = typeof Audio !== 'undefined'
+    ? new Audio('/Audios/VERIFICARYAPE.mp3')
+    : null;
+if (asesorAudio) asesorAudio.preload = 'auto';
+if (yapeAudio) yapeAudio.preload = 'auto';
+
+function playAlert(audio: HTMLAudioElement | null) {
+    if (!audio) return;
+    try {
+        audio.currentTime = 0;
+        audio.play().catch(() => {/* autoplay blocked — user must interact first */});
+    } catch (_) {/* noop */}
+}
 
 // ── Real-time via Laravel Reverb ───────────────────────────────────────────
 const localMessages = ref<Message[]>(props.messages || []);
@@ -288,8 +349,20 @@ onMounted(() => {
         .listen('.client.updated', (e: any) => {
             if (!e?.client) return;
             const idx = (props.clients || []).findIndex((c: Client) => c.id === e.client.id);
+            const prevStatus = idx !== -1 ? props.clients[idx].status : null;
+            const newStatus = e.client.status;
+
             if (idx !== -1) {
                 Object.assign(props.clients[idx], e.client);
+            } else {
+                // New client appearing on the dashboard
+                (props.clients || []).unshift(e.client as Client);
+            }
+
+            // Audio alerts only on actual transition into the alert status
+            if (newStatus !== prevStatus) {
+                if (newStatus === 'NECESITA ASESOR') playAlert(asesorAudio);
+                else if (newStatus === 'PAGO RECIBIDO') playAlert(yapeAudio);
             }
         });
 
@@ -343,12 +416,28 @@ function formatTime(dt: string) {
                 <div class="flex h-10 w-10 items-center justify-center rounded-full bg-[#374045]">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-[#e9edef]" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5.121 17.804A8.966 8.966 0 0112 15c2.34 0 4.47.895 6.056 2.357M12 11a4 4 0 100-8 4 4 0 000 8z" /></svg>
                 </div>
-                <div v-if="needsAttentionCount > 0" class="flex items-center gap-2 rounded-full bg-[#ef4444]/20 px-3 py-1 animate-pulse">
-                    <span class="relative flex h-3 w-3">
-                        <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#ef4444] opacity-75"></span>
-                        <span class="relative inline-flex h-3 w-3 rounded-full bg-[#ef4444]"></span>
-                    </span>
-                    <span class="text-xs font-bold text-[#ef4444]">{{ needsAttentionCount }} necesitan atención</span>
+                <div class="flex flex-wrap items-center justify-end gap-2">
+                    <div v-if="paymentReceivedCount > 0" class="flex items-center gap-2 rounded-full bg-[#22c55e]/20 px-3 py-1 animate-pulse">
+                        <span class="relative flex h-3 w-3">
+                            <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#22c55e] opacity-75"></span>
+                            <span class="relative inline-flex h-3 w-3 rounded-full bg-[#22c55e]"></span>
+                        </span>
+                        <span class="text-xs font-bold text-[#22c55e]">💰 {{ paymentReceivedCount }} pago{{ paymentReceivedCount > 1 ? 's' : '' }} por validar</span>
+                    </div>
+                    <div v-if="needsAttentionCount > 0" class="flex items-center gap-2 rounded-full bg-[#ef4444]/20 px-3 py-1 animate-pulse">
+                        <span class="relative flex h-3 w-3">
+                            <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#ef4444] opacity-75"></span>
+                            <span class="relative inline-flex h-3 w-3 rounded-full bg-[#ef4444]"></span>
+                        </span>
+                        <span class="text-xs font-bold text-[#ef4444]">{{ needsAttentionCount }} necesitan atención</span>
+                    </div>
+                    <div v-if="verifyYapeCount > 0" class="flex items-center gap-2 rounded-full bg-[#f59e0b]/20 px-3 py-1 animate-pulse">
+                        <span class="relative flex h-3 w-3">
+                            <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#f59e0b] opacity-75"></span>
+                            <span class="relative inline-flex h-3 w-3 rounded-full bg-[#f59e0b]"></span>
+                        </span>
+                        <span class="text-xs font-bold text-[#f59e0b]">{{ verifyYapeCount }} comprobante{{ verifyYapeCount > 1 ? 's' : '' }} por revisar</span>
+                    </div>
                 </div>
             </div>
 
@@ -363,6 +452,52 @@ function formatTime(dt: string) {
                         class="w-full border-none bg-transparent text-sm placeholder:text-[#8696a0] focus:ring-0"
                     />
                 </div>
+            </div>
+
+            <!-- Filter Tabs -->
+            <div class="flex gap-1 px-3 py-2 overflow-x-auto">
+                <button
+                    @click="activeTab = 'todos'"
+                    class="whitespace-nowrap rounded-full px-3 py-1 text-xs font-medium transition-colors"
+                    :class="activeTab === 'todos' ? 'bg-[#00a884] text-[#111b21]' : 'bg-transparent text-[#8696a0] hover:text-[#e9edef]'"
+                >
+                    Todos
+                </button>
+                <button
+                    @click="activeTab = 'nuevos'"
+                    class="whitespace-nowrap rounded-full px-3 py-1 text-xs font-medium transition-colors"
+                    :class="activeTab === 'nuevos' ? 'bg-[#00a884] text-[#111b21]' : 'bg-transparent text-[#8696a0] hover:text-[#e9edef]'"
+                >
+                    Nuevos
+                </button>
+                <button
+                    @click="activeTab = 'por_responder'"
+                    class="whitespace-nowrap rounded-full px-3 py-1 text-xs font-medium transition-colors"
+                    :class="activeTab === 'por_responder' ? 'bg-[#00a884] text-[#111b21]' : 'bg-transparent text-[#8696a0] hover:text-[#e9edef]'"
+                >
+                    Por responder
+                </button>
+                <button
+                    @click="activeTab = 'esperando_pago'"
+                    class="whitespace-nowrap rounded-full px-3 py-1 text-xs font-medium transition-colors"
+                    :class="activeTab === 'esperando_pago' ? 'bg-[#00a884] text-[#111b21]' : 'bg-transparent text-[#8696a0] hover:text-[#e9edef]'"
+                >
+                    Esperando pago
+                </button>
+                <button
+                    @click="activeTab = 'verificaryape'"
+                    class="whitespace-nowrap rounded-full px-3 py-1 text-xs font-medium transition-colors"
+                    :class="activeTab === 'verificaryape' ? 'bg-[#00a884] text-[#111b21]' : 'bg-transparent text-[#8696a0] hover:text-[#e9edef]'"
+                >
+                    📸 Verificar Yape
+                </button>
+                <button
+                    @click="activeTab = 'necesita_asesor'"
+                    class="whitespace-nowrap rounded-full px-3 py-1 text-xs font-medium transition-colors"
+                    :class="activeTab === 'necesita_asesor' ? 'bg-[#00a884] text-[#111b21]' : 'bg-transparent text-[#8696a0] hover:text-[#e9edef]'"
+                >
+                    Necesita asesor
+                </button>
             </div>
 
             <!-- Clients List -->
@@ -380,6 +515,10 @@ function formatTime(dt: string) {
                         <span v-if="client.status === 'NECESITA ASESOR'" class="absolute -right-0.5 -top-0.5 flex h-4 w-4">
                             <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#ef4444] opacity-75"></span>
                             <span class="relative inline-flex h-4 w-4 rounded-full bg-[#ef4444]"></span>
+                        </span>
+                        <span v-else-if="client.status === 'PAGO RECIBIDO'" class="absolute -right-0.5 -top-0.5 flex h-4 w-4">
+                            <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#22c55e] opacity-75"></span>
+                            <span class="relative inline-flex h-4 w-4 rounded-full bg-[#22c55e]"></span>
                         </span>
                     </div>
                     <div class="min-w-0 flex-1">
@@ -429,6 +568,20 @@ function formatTime(dt: string) {
                                 <span class="relative inline-flex h-2.5 w-2.5 rounded-full bg-[#ef4444]"></span>
                             </span>
                             <span class="text-xs font-bold text-[#ef4444]">NECESITA ASESOR</span>
+                        </div>
+                        <div v-else-if="selectedClient.status === 'PAGO RECIBIDO'" class="ml-4 flex items-center gap-2 rounded-full bg-[#22c55e]/20 px-3 py-1 animate-pulse">
+                            <span class="relative flex h-2.5 w-2.5">
+                                <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#22c55e] opacity-75"></span>
+                                <span class="relative inline-flex h-2.5 w-2.5 rounded-full bg-[#22c55e]"></span>
+                            </span>
+                            <span class="text-xs font-bold text-[#22c55e]">💰 PAGO RECIBIDO — Validar</span>
+                        </div>
+                        <div v-else-if="selectedClient.status === 'VERIFICARYAPE'" class="ml-4 flex items-center gap-2 rounded-full bg-[#f59e0b]/20 px-3 py-1 animate-pulse">
+                            <span class="relative flex h-2.5 w-2.5">
+                                <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#f59e0b] opacity-75"></span>
+                                <span class="relative inline-flex h-2.5 w-2.5 rounded-full bg-[#f59e0b]"></span>
+                            </span>
+                            <span class="text-xs font-bold text-[#f59e0b]">📸 VERIFICARYAPE — Revisar comprobante</span>
                         </div>
                     </div>
                 </div>
@@ -535,6 +688,7 @@ function formatTime(dt: string) {
                             <option value="INTERESADO">🟡 INTERESADO</option>
                             <option value="CONSULTANDO">🟠 CONSULTANDO</option>
                             <option value="ESPERANDO PAGO">🟣 ESPERANDO PAGO</option>
+                            <option value="VERIFICARYAPE">🟠 VERIFICARYAPE</option>
                             <option value="PAGO RECIBIDO">🟢 PAGO RECIBIDO</option>
                             <option value="VENTA CUMPLIDA">🟢 VENTA CUMPLIDA</option>
                             <option value="NECESITA ASESOR">🔴 NECESITA ASESOR</option>
@@ -552,6 +706,26 @@ function formatTime(dt: string) {
                             <option value="">— Sin asignar —</option>
                             <option v-for="u in users" :key="u.id" :value="u.id">{{ u.name }}</option>
                         </select>
+                    </div>
+
+                    <!-- Payment Receipt Verification -->
+                    <div v-if="selectedClient.status === 'VERIFICARYAPE' && selectedClient.payment_receipt_url" class="mt-4 rounded-xl bg-[#f59e0b]/10 border border-[#f59e0b]/30 p-4">
+                        <h4 class="text-sm font-bold text-[#f59e0b] mb-3">📸 Comprobante de Pago</h4>
+                        <div class="mb-3">
+                            <img :src="selectedClient.payment_receipt_url" alt="Comprobante" class="mx-auto max-h-48 rounded-lg border border-[#374045]" />
+                        </div>
+                        <div v-if="selectedClient.paid_amount" class="mb-3 text-sm">
+                            <span class="text-[#8696a0]">Monto detectado:</span>
+                            <span class="ml-2 font-bold text-[#e9edef]">S/ {{ selectedClient.paid_amount.toFixed(2) }}</span>
+                        </div>
+                        <div class="flex gap-2">
+                            <button @click="approvePayment" class="flex-1 rounded-lg bg-[#22c55e] px-3 py-2 text-sm font-bold text-[#111b21] hover:bg-[#16a34a]">
+                                ✅ Aprobar
+                            </button>
+                            <button @click="rejectPayment" class="flex-1 rounded-lg bg-[#ef4444] px-3 py-2 text-sm font-bold text-[#e9edef] hover:bg-[#dc2626]">
+                                ❌ Rechazar
+                            </button>
+                        </div>
                     </div>
                 </div>
 
@@ -760,5 +934,6 @@ function formatTime(dt: string) {
             </div>
         </div>
         </div>
+
     </AppLayout>
 </template>

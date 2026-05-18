@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\DeliveryZone;
 use App\Models\Product;
+use App\Models\Setting;
 
 /**
  * Local NLP-lite detector. Avoids hitting Gemini for trivial messages
@@ -13,13 +14,43 @@ use App\Models\Product;
  */
 class IntentDetector
 {
-    /** Negocio config (puede moverse a config/business.php) */
+    /** Fallback defaults (used if settings table is empty) */
     public const BUSINESS_HOURS  = 'Lunes a Sábado de 10:00 a.m. a 8:00 p.m.';
     public const YAPE_NUMBER     = '912 874 650';
     public const YAPE_HOLDER     = 'Solange Llantoy';
-    public const SHALOM_LIMA     = 10;   // S/.
-    public const SHALOM_PROVINCIA = 12;   // S/. promedio
+    public const SHALOM_LIMA     = 10;
+    public const SHALOM_PROVINCIA = 12;
     public const MOTORIZADO_WINDOW = 'Lunes a Sábado de 5 p.m. a 9 p.m.';
+
+    public static function getBusinessHours(): string
+    {
+        return Setting::get('business_hours', self::BUSINESS_HOURS);
+    }
+
+    public static function getYapeNumber(): string
+    {
+        return Setting::get('yape_number', self::YAPE_NUMBER);
+    }
+
+    public static function getYapeHolder(): string
+    {
+        return Setting::get('yape_holder', self::YAPE_HOLDER);
+    }
+
+    public static function getShalomLima(): float
+    {
+        return (float) Setting::get('shalom_lima', self::SHALOM_LIMA);
+    }
+
+    public static function getShalomProvincia(): float
+    {
+        return (float) Setting::get('shalom_provincia', self::SHALOM_PROVINCIA);
+    }
+
+    public static function getMotorizadoWindow(): string
+    {
+        return Setting::get('motorizado_window', self::MOTORIZADO_WINDOW);
+    }
 
     /**
      * @return array{type:string, message?:string}|null

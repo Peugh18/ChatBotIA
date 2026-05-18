@@ -3,8 +3,10 @@
 use App\Http\Controllers\CategoryController;
 use App\Http\Controllers\ClientNoteController;
 use App\Http\Controllers\DashboardController;
+use App\Http\Controllers\DeliveryZoneController;
 use App\Http\Controllers\InventoryController;
 use App\Http\Controllers\QuickReplyController;
+use App\Http\Controllers\SettingController;
 use App\Http\Controllers\TagController;
 use Illuminate\Support\Facades\Route;
 use Inertia\Inertia;
@@ -21,6 +23,8 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::post('crm/chat/{client}/order',         [DashboardController::class, 'createOrder'])->name('crm.client.order');
     Route::post('crm/chat/{client}/send',          [DashboardController::class, 'sendMessage'])->name('crm.client.send');
     Route::post('crm/chat/{client}/assign',        [DashboardController::class, 'assign'])->name('crm.client.assign');
+    Route::post('crm/chat/{client}/payment/approve', [DashboardController::class, 'approvePayment'])->name('crm.client.payment.approve');
+    Route::post('crm/chat/{client}/payment/reject',  [DashboardController::class, 'rejectPayment'])->name('crm.client.payment.reject');
 
     // Notes
     Route::post('crm/chat/{client}/notes',         [ClientNoteController::class, 'store'])->name('crm.notes.store');
@@ -36,6 +40,12 @@ Route::middleware(['auth', 'verified'])->group(function () {
     Route::put('quick-replies/{quickReply}',       [QuickReplyController::class, 'update'])->name('quick-replies.update');
     Route::delete('quick-replies/{quickReply}',    [QuickReplyController::class, 'destroy'])->name('quick-replies.destroy');
 
+    // Delivery zones CRUD
+    Route::get('delivery-zones',                   [DeliveryZoneController::class, 'index'])->name('delivery-zones.index');
+    Route::post('delivery-zones',                  [DeliveryZoneController::class, 'store'])->name('delivery-zones.store');
+    Route::put('delivery-zones/{deliveryZone}',    [DeliveryZoneController::class, 'update'])->name('delivery-zones.update');
+    Route::delete('delivery-zones/{deliveryZone}', [DeliveryZoneController::class, 'destroy'])->name('delivery-zones.destroy');
+
     // Inventory CRUD
     Route::get('inventory',                [InventoryController::class, 'index'])->name('inventory');
     Route::post('inventory',               [InventoryController::class, 'store'])->name('inventory.store');
@@ -50,6 +60,10 @@ Route::middleware(['auth', 'verified'])->group(function () {
 
     // Sales Dashboard
     Route::get('dashboard', [DashboardController::class, 'sales'])->name('dashboard');
+
+    // Business Settings
+    Route::get('business-settings', [SettingController::class, 'index'])->name('business-settings.index');
+    Route::put('business-settings', [SettingController::class, 'update'])->name('business-settings.update');
 });
 
 require __DIR__.'/settings.php';

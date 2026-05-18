@@ -50,9 +50,7 @@ class DeliveryZoneSeeder extends Seeder
             ['Cieneguilla',             30],
 
             // ── Lima Sur ───────────────────────────────────────────────────
-            // ⚠️ "Barranco" venía como 1 sol en la fuente original (probable
-            // typo). Se ajusta a 15 por consistencia con su zona; editable.
-            ['Barranco',                15],
+            ['Barranco',                1],
             ['Chorrillos',              15],
             ['Lurín',                   30],
             ['Pachacámac',              30],

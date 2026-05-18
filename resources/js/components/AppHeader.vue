@@ -17,7 +17,7 @@ import UserMenuContent from '@/components/UserMenuContent.vue';
 import { getInitials } from '@/composables/useInitials';
 import type { BreadcrumbItem, NavItem } from '@/types';
 import { Link, usePage } from '@inertiajs/vue3';
-import { BookOpen, Folder, LayoutGrid, Menu, Search, MessageSquare, Package, Tags, BarChart3 } from 'lucide-vue-next';
+import { BookOpen, Folder, LayoutGrid, Menu, Search, MessageSquare, Package, Tags, BarChart3, Bike, Settings } from 'lucide-vue-next';
 import { computed } from 'vue';
 
 interface Props {
@@ -54,9 +54,19 @@ const mainNavItems: NavItem[] = [
         icon: Tags,
     },
     {
+        title: 'Tarifas Delivery',
+        href: '/delivery-zones',
+        icon: Bike,
+    },
+    {
         title: 'Dashboard de Ventas',
         href: '/dashboard',
         icon: BarChart3,
+    },
+    {
+        title: 'Configuración',
+        href: '/business-settings',
+        icon: Settings,
     },
 ];
 

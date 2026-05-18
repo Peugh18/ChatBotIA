@@ -15,13 +15,13 @@ Artisan::command('inspire', function () {
 // ─── Roma CRM Automation Jobs ─────────────────────────────────────────────────
 
 // Run every minute: re-engage clients who didn't reply to order confirmation
-Schedule::job(new ConfirmationFollowUpJob)->everyMinute();
+Schedule::job(new ConfirmationFollowUpJob)->everyMinute()->withoutOverlapping();
 
 // Run every 2 hours: recover clients who abandoned their cart
-Schedule::job(new AbandonedCartFollowUpJob)->everyTwoHours();
+Schedule::job(new AbandonedCartFollowUpJob)->everyTwoHours()->withoutOverlapping();
 
 // Run every hour: remind clients waiting to pay
-Schedule::job(new PaymentReminderJob)->hourly();
+Schedule::job(new PaymentReminderJob)->hourly()->withoutOverlapping();
 
 // Run every 6 hours: post-sale satisfaction messages for delivered orders
-Schedule::job(new PostSaleFollowUpJob)->everySixHours();
+Schedule::job(new PostSaleFollowUpJob)->everySixHours()->withoutOverlapping();

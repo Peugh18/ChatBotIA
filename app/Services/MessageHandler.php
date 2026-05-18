@@ -88,7 +88,10 @@ class MessageHandler
             broadcast(new MessageReceived($msg))->toOthers();
             broadcast(new ClientStatusUpdated($client->fresh()))->toOthers();
 
-            $client->update(['last_interaction_at' => now()]);
+            $client->update([
+                'last_interaction_at' => now(),
+                'last_customer_message_at' => now(),
+            ]);
 
             if ($type === 'image') {
                 $this->handleImageMessage($client, $mediaId);
@@ -144,9 +147,10 @@ class MessageHandler
         // Universal cancel
         if (in_array($cleanText, ['cancelar', 'salir', 'cancel', 'stop'])) {
             $this->reply($client, "Entendido, cancelé el proceso. 😊 ¿Hay algo más en que pueda ayudarte?");
-            $client->update([
+            $this->updateClientAndBroadcast($client, [
                 'state' => ['step' => 'start'],
                 'status' => 'INTERESADO',
+                'opted_out_at' => now(),
                 'confirmation_requested_at' => null,
                 'followup_3_sent_at' => null,
                 'followup_15_sent_at' => null,
@@ -155,17 +159,37 @@ class MessageHandler
             return;
         }
 
-        // Shortcut: client tapped "Lo quiero 💚" on a product card — skip AI, go straight to variant selection
+        // ── Payment method selection (Yape vs Tarjeta) ───────────────────────
+        // If the client is awaiting payment and picks a method, send method-specific info.
+        if ($client->status === 'ESPERANDO PAGO') {
+            $payment = $this->detectPaymentMethod($cleanText);
+            if ($payment === 'yape') {
+                $state['payment_method'] = 'Yape';
+                $state['step'] = 'awaiting_payment';
+                $client->update(['state' => $state]);
+                $this->reply($client, $this->buildYapeOnlyMessage($this->getExpectedPaymentAmount($state)));
+                return;
+            }
+            if ($payment === 'tarjeta') {
+                $state['payment_method'] = 'Tarjeta';
+                $state['step'] = 'awaiting_payment';
+                $client->update(['state' => $state]);
+                $this->reply($client, $this->buildCardOnlyMessage($this->getExpectedPaymentAmount($state)));
+                return;
+            }
+        }
+
+        // Shortcut: client tapped "Lo quiero 💚" on a product card — skip AI, go straight to variant selection.
+        // Only fires from idle/confirmation steps so it doesn't interrupt collect_address/name/shipping/variant.
+        $currentStep = $state['step'] ?? 'start';
         $productIdFromState = $state['product_id'] ?? null;
-        if ($productIdFromState && $this->looksLikeBuyIntent($cleanText)) {
+        $allowBuyShortcut = in_array($currentStep, ['start', 'waiting_confirmation'], true);
+        if ($allowBuyShortcut && $productIdFromState && $this->looksLikeBuyIntent($cleanText)) {
             $product = Product::with('variants')->find($productIdFromState);
             if ($product) {
                 $this->sendProductCard($client, $product);
-                $opts = $product->variants
-                    ->where('stock', '>', 0)
-                    ->map(fn($v) => "• {$v->color} / T:{$v->size} ({$v->stock} disponibles)")
-                    ->join("\n");
-                $this->reply($client, "¿En qué color y talla lo quieres?\n\n{$opts}\n\nEscríbeme por ejemplo: *Negro M*");
+                $opts = $this->formatVariantsForCustomer($product);
+                $this->reply($client, "¿En qué color y talla lo quieres, hermosa?\n\nLo tengo disponible en {$opts}.\n\nPuedes escribirme por ejemplo: *Negro M* ✨");
                 $state['step'] = 'collect_variant';
                 $client->update(['state' => $state]);
                 return;
@@ -174,25 +198,76 @@ class MessageHandler
 
         // Simple data-collection steps (no AI needed — just store the value)
         $dataStep = $state['step'] ?? 'start';
-        if ($dataStep === 'collect_address') {
-            $state['address'] = $text;
-            $state['step']    = 'collect_name';
+        if ($dataStep === 'collect_delivery_district') {
+            $zone = $this->findDeliveryZoneFromText($text);
+            if (!$zone) {
+                $this->reply($client, "Hermosa, ¿me confirmas el distrito exacto de Lima para cotizarte el delivery por motorizado? 🛵");
+                return;
+            }
+            $state['district'] = $zone->district;
+            $state['delivery_cost'] = (float) $zone->motorizado_cost;
+            $state['step'] = 'collect_payment_method';
             $client->update(['state' => $state]);
-            $this->reply($client, "Perfecto 📦 ¿Cuál es el nombre completo de quien recibe el paquete?");
+            $this->reply($client,
+                "El delivery para *{$zone->district}* es de *S/ " . number_format($zone->motorizado_cost, 2) . "*.\n\n"
+                . "El pago del motorizado se cancela al recibir el vestido, ¡y las entregas son de lunes a sábado de 5 a 9 pm! 🛵\n\n"
+                . "El vestidito queda en *S/ " . number_format($this->getOrderProductTotal($state), 2) . "*. ¿Prefieres pagar por *Yape* o *tarjeta/link*, hermosa?"
+            );
+            $this->sendButtons($client, '¿Cómo prefieres pagar?', ['Yape 📱', 'Tarjeta 💳']);
             return;
         }
-        if ($dataStep === 'collect_name') {
-            $state['recipient_name'] = $text;
-            $state['step']           = 'collect_shipping';
+        if ($dataStep === 'collect_payment_method') {
+            $payment = $this->detectPaymentMethod($cleanText);
+            if (!$payment) {
+                $this->reply($client, "Claro hermosa, para dejarlo separado dime si prefieres pagar por *Yape* o por *tarjeta/link* ✨");
+                $this->sendButtons($client, '¿Cómo prefieres pagar?', ['Yape 📱', 'Tarjeta 💳']);
+                return;
+            }
+            $state['payment_method'] = $payment === 'yape' ? 'Yape' : 'Tarjeta';
+            $state['step'] = 'awaiting_payment';
             $client->update(['state' => $state]);
-            $this->reply($client, "¿Qué método de envío prefieres?\n\n🏍️ *Motorizado* (Lima)\n📦 *Shalom* (Provincias)");
-            $this->sendButtons($client, 'Elige tu método de envío:', ['Motorizado 🛵', 'Shalom 🚚']);
+            $this->updateClientAndBroadcast($client, ['status' => 'ESPERANDO PAGO', 'priority' => 'ALTA']);
+            $this->reply($client, $payment === 'yape'
+                ? $this->buildYapeOnlyMessage($this->getExpectedPaymentAmount($state))
+                : $this->buildCardOnlyMessage($this->getExpectedPaymentAmount($state))
+            );
+            return;
+        }
+        if ($dataStep === 'collect_delivery_details_motorizado') {
+            $state['delivery_details'] = $text;
+            $this->finalizePaidOrder($client, $state);
+            return;
+        }
+        if ($dataStep === 'collect_delivery_details_shalom') {
+            $state['delivery_details'] = $text;
+            $this->finalizePaidOrder($client, $state);
             return;
         }
         if ($dataStep === 'collect_shipping') {
-            $state['shipping'] = $text;
-            $this->completeOrder($client, $state);
-            $client->update(['state' => ['step' => 'start']]);
+            $shippingChoice = $this->normalizeShippingChoice($text);
+            if (!$shippingChoice) {
+                $this->reply($client,
+                    "Hermosa, para avanzar necesito que elijas una opción de envío válida 😊\n\n"
+                    . "Puede ser *Motorizado* o *Shalom*."
+                );
+                $this->sendButtons($client, 'Elige tu método de envío:', ['Motorizado 🛵', 'Shalom 🚚']);
+                return;
+            }
+            $state['shipping'] = $shippingChoice;
+            if ($shippingChoice === 'Motorizado') {
+                $state['step'] = 'collect_delivery_district';
+                $client->update(['state' => $state]);
+                $this->reply($client, "Perfecto, hermosa 🛵 ¿A qué distrito sería el envío?");
+                return;
+            }
+            $state['shipping_cost'] = IntentDetector::getShalomLima();
+            $state['step'] = 'collect_payment_method';
+            $client->update(['state' => $state]);
+            $this->reply($client,
+                "Por *Shalom* el costo de envío es de *S/ 10 para Lima* y *S/ 12 para provincia* en promedio, y llega de 1 a 3 días hábiles. 🚚\n\n"
+                . "El total a pagar ahora sería *S/ " . number_format($this->getExpectedPaymentAmount($state), 2) . "*. ¿Prefieres *Yape* o *tarjeta/link*, hermosa?"
+            );
+            $this->sendButtons($client, '¿Cómo prefieres pagar?', ['Yape 📱', 'Tarjeta 💳']);
             return;
         }
 
@@ -239,7 +314,7 @@ class MessageHandler
                     . "O escríbeme directamente lo que te interesa (color, talla, presupuesto)."
                 );
                 if (in_array($client->status, ['NUEVO', null], true)) {
-                    $client->update(['status' => 'INTERESADO']);
+                    $this->updateClientAndBroadcast($client, ['status' => 'INTERESADO']);
                 }
                 return true;
 
@@ -248,13 +323,13 @@ class MessageHandler
                     "¡Claro! 🙌 En unos minutos un asesor del equipo te escribe por aquí mismo. "
                     . "Mientras tanto, si quieres ir adelantando, dime qué prenda te interesa."
                 );
-                $client->update(['status' => 'NECESITA ASESOR', 'priority' => 'ALTA']);
+                $this->updateClientAndBroadcast($client, ['status' => 'NECESITA ASESOR', 'priority' => 'ALTA']);
                 Log::info("Client {$client->phone} requested human (intent detector).");
                 return true;
 
             case 'business_hours':
                 $this->reply($client,
-                    "🕒 Nuestro horario de atención por WhatsApp:\n\n*" . IntentDetector::BUSINESS_HOURS . "*\n\n"
+                    "🕒 Nuestro horario de atención por WhatsApp:\n\n*" . IntentDetector::getBusinessHours() . "*\n\n"
                     . "Pero puedes escribirnos cuando quieras y te respondo en cuanto abramos. 😊"
                 );
                 return true;
@@ -277,7 +352,7 @@ class MessageHandler
                 if ($zone) {
                     $this->reply($client,
                         "🏍️ *Delivery a {$zone->district}*:\n\n"
-                        . "• *Motorizado*: S/ " . number_format($zone->motorizado_cost, 2) . " (" . IntentDetector::MOTORIZADO_WINDOW . ")\n"
+                        . "• *Motorizado*: S/ " . number_format($zone->motorizado_cost, 2) . " (" . IntentDetector::getMotorizadoWindow() . ")\n"
                         . "• *Shalom Lima*: S/ " . number_format($zone->shalom_cost, 2) . "\n\n"
                         . "¿Qué método prefieres, hermosa? 💛"
                     );
@@ -288,9 +363,9 @@ class MessageHandler
             case 'delivery_info':
                 $this->reply($client,
                     "📦 *Opciones de envío:*\n\n"
-                    . "🏍️ *Motorizado* (Lima): tarifa según distrito — " . IntentDetector::MOTORIZADO_WINDOW . ".\n"
-                    . "📦 *Shalom Lima*: S/ " . IntentDetector::SHALOM_LIMA . ".\n"
-                    . "📦 *Shalom Provincia*: ~S/ " . IntentDetector::SHALOM_PROVINCIA . " en promedio.\n\n"
+                    . "🏍️ *Motorizado* (Lima): tarifa según distrito — " . IntentDetector::getMotorizadoWindow() . ".\n"
+                    . "📦 *Shalom Lima*: S/ " . IntentDetector::getShalomLima() . ".\n"
+                    . "📦 *Shalom Provincia*: ~S/ " . IntentDetector::getShalomProvincia() . " en promedio.\n\n"
                     . "¿A qué distrito te lo enviamos? Así te paso el costo exacto."
                 );
                 return true;
@@ -305,7 +380,7 @@ class MessageHandler
                         . "Dime cuál te llama la atención (o mándame foto de algo similar) y te paso colores, tallas y stock."
                     );
                 }
-                $client->update(['status' => 'INTERESADO']);
+                $this->updateClientAndBroadcast($client, ['status' => 'INTERESADO']);
                 return true;
 
             case 'thanks':
@@ -331,11 +406,13 @@ class MessageHandler
      * Single source of truth for the payment-info message.
      * Used both by the quick intent detector and by completeOrder().
      */
-    protected function buildPaymentInfoMessage(): string
+    protected function buildPaymentInfoMessage(?float $amount = null): string
     {
-        $yape  = IntentDetector::YAPE_NUMBER;
-        $owner = IntentDetector::YAPE_HOLDER;
+        $yape  = IntentDetector::getYapeNumber();
+        $owner = IntentDetector::getYapeHolder();
+        $amountText = $amount ? "Monto: *S/ " . number_format($amount, 2) . "*\n\n" : '';
         return "💸 *Métodos de pago*\n\n"
+            . $amountText
             . "🔹 *Yape* a este mismo número: *{$yape}* ({$owner}).\n"
             . "   Envíame la captura y confirmamos en el acto. ⚡\n\n"
             . "🔹 *Tarjeta / Link de pago*: si prefieres pagar con tarjeta, "
@@ -344,6 +421,49 @@ class MessageHandler
             . "   • Correo electrónico\n"
             . "   • Número de celular\n"
             . "   • Monto a pagar";
+    }
+
+    /**
+     * Yape-only payment instructions (after client picks Yape button).
+     */
+    protected function buildYapeOnlyMessage(?float $amount = null): string
+    {
+        $yape  = IntentDetector::getYapeNumber();
+        $owner = IntentDetector::getYapeHolder();
+        $amountText = $amount ? "El monto a yapear es *S/ " . number_format($amount, 2) . "*.\n\n" : '';
+        return "Perfecto, hermosa 💕\n\n"
+            . $amountText
+            . "Puedes yapear al número:\n"
+            . "*{$yape}* — {$owner}\n\n"
+            . "Cuando termines, envíame aquí mismo la captura de pantalla para validarlo y dejar tu pedido programado. 📸";
+    }
+
+    /**
+     * Card-only payment instructions (after client picks Tarjeta button).
+     */
+    protected function buildCardOnlyMessage(?float $amount = null): string
+    {
+        $amountText = $amount ? "El monto del link sería *S/ " . number_format($amount, 2) . "*.\n\n" : '';
+        return "Claro, reina 💳\n\n"
+            . $amountText
+            . "Para generarte el link de pago necesito estos datos en un solo mensaje:\n\n"
+            . "• Nombre completo\n"
+            . "• Correo electrónico\n"
+            . "• Número de celular\n"
+            . "• Monto a pagar\n\n"
+            . "En cuanto los reciba te envío el link seguro para que pagues con tu tarjeta. 🔒";
+    }
+
+    /**
+     * Detect which payment method (Yape / Tarjeta) the client picked.
+     * Returns 'yape', 'tarjeta', or null.
+     */
+    protected function detectPaymentMethod(string $text): ?string
+    {
+        $t = mb_strtolower(trim($text));
+        if (preg_match('/\b(yape|yapeo|yapear|plin)\b/u', $t)) return 'yape';
+        if (preg_match('/\b(tarjeta|card|visa|mastercard|cr[eé]dito|d[eé]bito|link)\b/u', $t)) return 'tarjeta';
+        return null;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -359,12 +479,35 @@ class MessageHandler
         $raw          = $this->geminiService->chatWithHistory($history, $systemPrompt);
 
         if (!$raw) {
-            if ($this->geminiService->lastErrorCode === 'quota') {
-                $this->reply($client, "Tuve un pequeño problema de conexión con mi sistema de inteligencia 🤖 Dame unos minutos y vuelve a escribirme. Si es urgente, escribe *asesor* y te atiende una persona del equipo.");
-                // Do NOT escalate to human on quota — it's temporary, not a bot failure.
-            } else {
-                $this->reply($client, "Tuve un problema técnico momentáneo 😅 ¿Puedes repetirme lo que necesitas?");
+            $err = $this->geminiService->lastErrorCode;
+
+            // Try local intent handling when Gemini is offline (quota/auth error).
+            // This keeps the bot responsive for greetings, catalog, FAQs, etc.
+            if (in_array($err, ['quota', 'auth', 'error'], true)) {
+                $localIntent = $this->intent->detect($text);
+                if ($localIntent && $this->handleQuickIntent($client, $localIntent)) {
+                    return;
+                }
+
+                // If no local intent matched, give an honest, non-escalating message.
+                if ($err === 'quota') {
+                    $this->reply($client,
+                        "Estoy con muchísima demanda en este momento 🤖\n\n"
+                        . "Dame unos minutos y vuelve a escribirme. Mientras tanto, "
+                        . "puedes decirme directamente qué prenda buscas (por ejemplo: *polo negro M*).\n\n"
+                        . "Si es urgente, escribe *asesor* y te atiende una persona del equipo."
+                    );
+                } else {
+                    $this->reply($client,
+                        "Tuve un problema técnico momentáneo 😅 ¿Puedes repetirme lo que necesitas? "
+                        . "Si sigue sin funcionar, escribe *asesor* y te ayuda una persona."
+                    );
+                }
+                return;
             }
+
+            // Unknown / unexpected failure
+            $this->reply($client, "Tuve un problema técnico momentáneo 😅 ¿Puedes repetirme lo que necesitas?");
             return;
         }
 
@@ -425,11 +568,42 @@ class MessageHandler
      */
     protected function looksLikeBuyIntent(string $text): bool
     {
-        $keywords = ['lo quiero', 'lo llevo', 'compro', 'me lo llevo', 'lo compro', 'sí lo quiero', 'si lo quiero', 'sí lo llevo', 'si lo llevo', 'me lo quedo', 'lo quiero comprar', 'sí', 'si'];
-        foreach ($keywords as $k) {
-            if (str_contains($text, $k)) return true;
+        $t = mb_strtolower(trim($text));
+
+        // Multi-word phrases (safe with substring match)
+        $phrases = [
+            'lo quiero', 'lo llevo', 'me lo llevo', 'lo compro', 'me lo quedo',
+            'lo quiero comprar', 'sí lo quiero', 'si lo quiero',
+            'sí lo llevo', 'si lo llevo', 'lo voy a llevar', 'me lo das',
+        ];
+        foreach ($phrases as $p) {
+            if (str_contains($t, $p)) return true;
         }
+
+        // Short ambiguous words: only match as standalone tokens (word boundary).
+        // Avoids "siempre" → "si", "casi" → "si", "decisión" → "si", etc.
+        if (preg_match('/(^|[^\p{L}])(sí|si|claro|dale|ok|okey|listo|compro|quiero)([^\p{L}]|$)/u', $t)) {
+            return true;
+        }
+
         return false;
+    }
+
+    /**
+     * Normalize a shipping-method response. Returns 'Motorizado', 'Shalom', or null if invalid.
+     */
+    protected function normalizeShippingChoice(string $text): ?string
+    {
+        $t = mb_strtolower(trim($text));
+        // Motorizado: any of these keywords
+        if (preg_match('/\b(motorizado|motoriz|moto|delivery|repartidor|lima)\b/u', $t)) {
+            return 'Motorizado';
+        }
+        // Shalom: agency / province
+        if (preg_match('/\b(shalom|provinci|agencia|courier)\b/u', $t)) {
+            return 'Shalom';
+        }
+        return null;
     }
 
     /**
@@ -515,8 +689,8 @@ class MessageHandler
             ->map(fn($z) => "  • {$z->district}: S/ " . number_format($z->motorizado_cost, 2))
             ->join("\n");
 
-        $yape  = IntentDetector::YAPE_NUMBER;
-        $owner = IntentDetector::YAPE_HOLDER;
+        $yape  = IntentDetector::getYapeNumber();
+        $owner = IntentDetector::getYapeHolder();
 
         // ── Sub-catálogo dinámico ────────────────────────────────────────────
         // Si el mensaje del usuario contiene filtros (color, talla, categoría,
@@ -552,12 +726,14 @@ Eres *Roma*, asesora de ventas senior de *Roma Store* — tienda de ropa peruana
 Tu misión es CERRAR VENTAS de forma natural, cálida y consultiva. Nunca digas que eres IA, bot o sistema.
 
 ═══ ESTILO DE COMUNICACIÓN ═══
-• Español peruano, tono cercano pero profesional ("hola", "te paso", "sí ahorita").
+• Español peruano, tono cercano, humano y de asesora de modas ("hermosa", "reina", "linda") sin exagerar.
 • Mensajes CORTOS (máx 4–6 líneas). Una idea por mensaje.
 • Usa emojis moderados (1–2 por mensaje, nunca más).
 • Tutea siempre. Llama al cliente por su nombre si lo sabes.
 • NUNCA inventes productos, precios, colores o tallas que no estén en el catálogo.
 • Si no tienes algo, NO mientas: ofrece la alternativa más cercana del catálogo real.
+• Prohibido responder con formato técnico de inventario como "LILA / T:S (1 disponibles)".
+• Traduce disponibilidad a lenguaje natural: "lo tengo en lila talla S y M".
 
 ═══ PERFIL DEL CLIENTE ═══
 Nombre: {$client->name}
@@ -606,19 +782,21 @@ Reglas para nota interna (campo internal_note, opcional, máx 200 chars):
 3. *Presentación*: envía datos exactos (vestido + color + precio). No inventes.
 4. *Cierre*: termina con esta frase EXACTA o muy cercana:
    "¿Nos confirmas si deseas realizar el pedido para poder ayudarte hermosa?"
-5. *Si confirma* → entrega info de pago (método ya tipificado abajo) y luego pregunta método de envío.
-6. *Si pide pagar con tarjeta* → solicita: Nombre completo, Correo, Celular, Monto.
-7. *Coordinación de envío* (después de captura de pago):
-   - Pregunta: "¿Te lo enviamos por motorizado o por Shalom?"
-   - Si pregunta por costo → usa la tabla de tarifas reales abajo (NO inventes).
-8. *Si elige motorizado* solicita ESTOS datos exactos:
+5. *Si confirma* → primero pide color/talla si falta. Cuando ya esté elegida la variante, el sistema pedirá método de envío.
+6. *Coordinación de envío ANTES del pago*:
+   - Pregunta: "¿Prefieres envío por motorizado o por Shalom?"
+   - Si elige motorizado, pide distrito y usa la tabla de tarifas reales abajo (NO inventes).
+   - Si elige Shalom, informa: Lima S/10, provincia S/12 en promedio, llega de 1 a 3 días hábiles.
+7. *Pago*: después de definir envío, ofrece Yape o tarjeta/link. Yape: {$yape} a nombre de {$owner}. Pide captura.
+8. *Después de validar captura correcta*, solicita datos de entrega según método.
+9. *Si es motorizado* solicita ESTOS datos exactos:
    ✅ NOMBRE DEL VESTIDO Y COLOR
    ✅ NOMBRE COMPLETO
    ✅ CELULAR
    ✅ DIRECCIÓN ESCRITA
    ✅ UBICACIÓN EN TIEMPO REAL (pin de WhatsApp)
    Aclárale: "Las entregas son de L–S, 5–9 p.m. El motorizado se paga aparte al recibir."
-9. *Si elige Shalom* solicita ESTOS datos exactos:
+10. *Si es Shalom* solicita ESTOS datos exactos:
    ✅ Nombre del vestido y color
    ✅ Nombre completo
    ✅ Número de DNI
@@ -660,7 +838,7 @@ No menciones los botones explícitamente; escribe naturalmente y el sistema los 
 
 ═══ REGLAS DE ACCIÓN ═══
 • Si el cliente dice claramente "lo quiero / lo llevo / sí" sobre un producto identificado → action="collect_variant" y product_id.
-• Si ya eligió color y talla y aceptó comprar → action="collect_address".
+• Si ya eligió color y talla y aceptó comprar → action="collect_address" (el sistema lo convertirá a método de envío, no pidas dirección aún).
 • Si envió comprobante de pago en texto/imagen → action="payment_received".
 • Si está molesto, confundido o pide humano → action="escalate".
 • En todos los demás casos → action="none".
@@ -752,11 +930,8 @@ PROMPT;
                 $product = $productId ? Product::with('variants')->find($productId) : null;
                 if ($product) {
                     $this->sendProductCard($client, $product);
-                    $opts = $product->variants
-                        ->where('stock', '>', 0)
-                        ->map(fn($v) => "• {$v->color} / T:{$v->size} ({$v->stock} disponibles)")
-                        ->join("\n");
-                    $this->reply($client, "¿En qué color y talla lo quieres?\n\n{$opts}\n\nEscríbeme por ejemplo: *Negro M*");
+                    $opts = $this->formatVariantsForCustomer($product);
+                    $this->reply($client, "¿En qué color y talla lo quieres, hermosa?\n\nLo tengo disponible en {$opts}.\n\nPuedes escribirme por ejemplo: *Negro M* ✨");
                     $state['step']      = 'collect_variant';
                     $state['product_id'] = $product->id;
                     $updateData['state'] = $state;
@@ -764,9 +939,11 @@ PROMPT;
                 break;
 
             case 'collect_address':
-                $state['step']       = 'collect_address';
+                $state['step']       = 'collect_shipping';
                 if ($productId) $state['product_id'] = $productId;
                 $updateData['state'] = $state;
+                $this->reply($client, "Perfecto, hermosa ✨ ¿Prefieres envío por *Motorizado* o por *Shalom*?");
+                $this->sendButtons($client, 'Elige tu método de envío:', ['Motorizado 🛵', 'Shalom 🚚']);
                 break;
 
             case 'payment_received':
@@ -786,7 +963,7 @@ PROMPT;
         }
 
         if (!empty($updateData)) {
-            $client->update($updateData);
+            $this->updateClientAndBroadcast($client, $updateData);
         }
     }
 
@@ -810,20 +987,23 @@ PROMPT;
             $state['variant_id']     = $variant->id;
             $state['selected_color'] = $variant->color;
             $state['selected_size']  = $variant->size;
-            $state['step']           = 'collect_address';
+            $state['step']           = 'collect_shipping';
             $client->update(['state' => $state]);
-            $this->reply($client, "✅ *{$variant->color} / T:{$variant->size}* confirmado.\n\nAhora dime tu dirección completa de envío 📦");
+            $this->reply($client,
+                "Listo hermosa, te separo el *{$variant->color} talla {$variant->size}* ✨\n\n"
+                . "¿Prefieres envío por *Motorizado* o por *Shalom*?"
+            );
+            $this->sendButtons($client, 'Elige tu método de envío:', ['Motorizado 🛵', 'Shalom 🚚']);
             return;
         }
 
         if ($variant) {
-            $this->reply($client, "Lo siento, *{$variant->color} T:{$variant->size}* está agotado 😔 ¿Eliges otra opción?");
+            $this->reply($client, "Lo siento, hermosa, justo esa opción en *{$variant->color} talla {$variant->size}* está agotada 😔 ¿Eliges otra opción?");
             return;
         }
 
-        $opts = $product->variants->where('stock', '>', 0)
-            ->map(fn($v) => "• {$v->color} / T:{$v->size}")->join("\n");
-        $this->reply($client, "No entendí bien tu elección 😅 Las opciones disponibles son:\n\n{$opts}");
+        $opts = $this->formatVariantsForCustomer($product);
+        $this->reply($client, "Ay linda, no entendí bien qué color y talla prefieres 😅\n\nTengo disponible: {$opts}\n\nPor ejemplo puedes escribirme: *Lila S*.");
     }
 
     /**
@@ -899,12 +1079,13 @@ PROMPT;
         }
 
         // ── If the client is awaiting payment, treat the image as a payment receipt.
-        if ($client->status === 'ESPERANDO PAGO') {
+        $state = $client->state ?? ['step' => 'start'];
+        if (in_array($client->status, ['ESPERANDO PAGO', 'VERIFICARYAPE'], true) || ($state['step'] ?? null) === 'awaiting_payment') {
             $this->capturePaymentReceipt($client, $binary);
             return;
         }
 
-        $client->update(['status' => 'CONSULTANDO', 'priority' => 'MEDIA']);
+        $this->updateClientAndBroadcast($client, ['status' => 'CONSULTANDO', 'priority' => 'MEDIA']);
 
         $base64  = $this->imageService->toBase64($binary);
         $catalog = $this->searchService->getCatalogForContext();
@@ -928,7 +1109,7 @@ PROMPT;
 
         $message = $result['message'] ?? "¡Qué linda prenda! Déjame buscar algo similar en nuestro catálogo. ¿Puedes decirme qué estilo o color prefieres?";
         $this->reply($client, $message);
-        $client->update(['status' => 'NECESITA ASESOR', 'priority' => 'ALTA']);
+        $this->updateClientAndBroadcast($client, ['status' => 'NECESITA ASESOR', 'priority' => 'ALTA']);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -939,18 +1120,15 @@ PROMPT;
     {
         $product->loadMissing('variants');
 
-        $variants = $product->variants
-            ->where('stock', '>', 0)
-            ->map(fn($v) => "  • {$v->color} / T:{$v->size}: {$v->stock} en stock")
-            ->join("\n");
+        $variants = $this->formatVariantsForCustomer($product);
 
         $prefix = $intro ? $intro . "\n\n" : '';
         $msg    = $prefix
             . "*{$product->name}*\n"
             . "💰 Precio: S/ {$product->price}\n"
             . "📝 {$product->description}\n\n"
-            . "*Disponibilidad:*\n{$variants}\n\n"
-            . "¿Te lo llevo? Responde *Sí* para iniciar tu pedido 🛍️";
+            . "Lo tengo disponible en {$variants}.\n\n"
+            . "¡Nos confirmas si deseas realizar el pedido para poder ayudarte hermosa! ✨";
 
         $this->reply($client, $msg);
         $client->update([
@@ -998,9 +1176,9 @@ PROMPT;
                 $order = Order::create([
                     'client_id'        => $client->id,
                     'total'            => $unitPrice * $quantity,
-                    'shipping_address' => $state['address']   ?? 'Por confirmar',
+                    'shipping_address' => $state['delivery_details'] ?? $state['district'] ?? 'Por confirmar',
                     'shipping_method'  => $state['shipping']  ?? 'Por confirmar',
-                    'status'           => 'PENDIENTE',
+                    'status'           => 'PAGO RECIBIDO',
                 ]);
 
                 OrderItem::create([
@@ -1025,37 +1203,33 @@ PROMPT;
                     "😔 Justo se acabó el stock de esa opción mientras conversabas. "
                     . "¿Quieres que te muestre alternativas muy parecidas?"
                 );
-                $client->update(['state' => ['step' => 'start'], 'status' => 'CONSULTANDO']);
+                $this->updateClientAndBroadcast($client, ['state' => ['step' => 'start'], 'status' => 'CONSULTANDO']);
                 return;
             }
             Log::error('completeOrder failed: ' . $e->getMessage());
             $this->reply($client, "Tuve un problema al registrar tu pedido 🙅‍♀️. Un asesor te escribirá en unos minutos.");
-            $client->update(['state' => ['step' => 'start'], 'status' => 'NECESITA ASESOR', 'priority' => 'ALTA']);
+            $this->updateClientAndBroadcast($client, ['state' => ['step' => 'start'], 'status' => 'NECESITA ASESOR', 'priority' => 'ALTA']);
             return;
         } catch (\Throwable $e) {
             Log::error('completeOrder unexpected: ' . $e->getMessage());
             $this->reply($client, "Tuve un problema al registrar tu pedido 🙅‍♀️. Un asesor te escribirá en unos minutos.");
-            $client->update(['state' => ['step' => 'start'], 'status' => 'NECESITA ASESOR', 'priority' => 'ALTA']);
+            $this->updateClientAndBroadcast($client, ['state' => ['step' => 'start'], 'status' => 'NECESITA ASESOR', 'priority' => 'ALTA']);
             return;
         }
 
-        $recipientName  = $state['recipient_name'] ?? $client->name ?? 'Cliente';
-        $variantDetails = " ({$variant->color}, T:{$variant->size})";
+        $recipientName  = $client->name ?? 'hermosa';
+        $variantDetails = " ({$variant->color}, talla {$variant->size})";
         $qtyDetails     = $quantity > 1 ? " × {$quantity}" : '';
         $orderNum       = str_pad($order->id, 5, '0', STR_PAD_LEFT);
 
         $this->reply($client,
             "🎉 *¡Pedido #{$orderNum} registrado, {$recipientName}!*\n\n"
-            . "🔹 *Producto:* {$product->name}{$variantDetails}{$qtyDetails}\n"
-            . "🔹 *Total:* S/ " . number_format($order->total, 2) . "\n"
-            . "🔹 *Envío a:* " . ($state['address'] ?? 'Por confirmar') . "\n"
-            . "🔹 *Método:* " . ($state['shipping'] ?? 'Por confirmar') . "\n\n"
-            . "Por favor realiza el pago y envíame la captura de pantalla aquí 📸"
+            . "Tu *{$product->name}{$variantDetails}{$qtyDetails}* quedó separado y programado, linda.\n"
+            . "Método de envío: *" . ($state['shipping'] ?? 'Por confirmar') . "*.\n\n"
+            . "Gracias por tu compra, hermosa 💕"
         );
 
-        $this->sendButtons($client, '¿Cómo prefieres pagar?', ['Yape �', 'Tarjeta 💳']);
-
-        $client->update(['status' => 'ESPERANDO PAGO', 'priority' => 'ALTA']);
+        $this->updateClientAndBroadcast($client, ['status' => 'PAGO RECIBIDO', 'priority' => 'ALTA', 'state' => ['step' => 'start']]);
 
         // Cross-sell natural post-pedido.
         $this->sendUpsellSuggestion($client, $product);
@@ -1092,6 +1266,30 @@ PROMPT;
             $filename = sprintf('payments/%s_%s.jpg', $client->id, now()->format('YmdHis'));
             Storage::disk('public')->put($filename, $binary);
             $url = '/storage/' . $filename;
+            $state = $client->state ?? ['step' => 'start'];
+            $expectedAmount = $this->getExpectedPaymentAmount($state);
+            $detectedAmount = $this->extractPaymentAmountFromReceipt($binary);
+
+            if ($detectedAmount !== null && $detectedAmount + 0.01 < $expectedAmount) {
+                $missing = $expectedAmount - $detectedAmount;
+                $this->reply($client,
+                    "¡Ay, hermosa! Veo que te equivocaste en el monto del Yape 😥\n\n"
+                    . "Me llegó por *S/ " . number_format($detectedAmount, 2) . "* pero el pedido está en *S/ " . number_format($expectedAmount, 2) . "*.\n\n"
+                    . "Completa la diferencia de *S/ " . number_format($missing, 2) . "* al mismo número para poder dejarlo programado por ti, linda. 💕"
+                );
+                return;
+            }
+
+            if ($detectedAmount === null) {
+                $this->reply($client, "Recibí tu captura, hermosa. La voy a pasar a revisión para confirmar el monto y dejar tu pedido programado. 💕");
+                $this->updateClientAndBroadcast($client, [
+                    'status' => 'VERIFICARYAPE',
+                    'priority' => 'ALTA',
+                    'payment_receipt_url' => $url,
+                    'paid_amount' => null,
+                ]);
+                return;
+            }
 
             $order = Order::where('client_id', $client->id)
                 ->whereIn('status', ['PENDIENTE', 'ESPERANDO PAGO'])
@@ -1104,17 +1302,43 @@ PROMPT;
                 ]);
             }
 
-            $client->update(['status' => 'PAGO RECIBIDO', 'priority' => 'ALTA']);
+            $state['payment_receipt_url'] = $url;
+            $state['paid_amount'] = $detectedAmount;
 
-            $orderNum = $order ? '#' . str_pad($order->id, 5, '0', STR_PAD_LEFT) : '';
+            if (($state['shipping'] ?? null) === 'Motorizado') {
+                $state['step'] = 'collect_delivery_details_motorizado';
+                $client->update(['state' => $state]);
+                $this->updateClientAndBroadcast($client, [
+                    'status' => 'PAGO RECIBIDO',
+                    'priority' => 'ALTA',
+                    'payment_receipt_url' => $url,
+                    'paid_amount' => $detectedAmount,
+                ]);
+                $this->reply($client,
+                    "¡Pago recibido, hermosa! ✅\n\n"
+                    . "Para programar tu envío por motorizado, envíame estos datos en un solo mensaje:\n\n"
+                    . "Nombre completo, celular, dirección escrita y tu ubicación en tiempo real. 🛵"
+                );
+                return;
+            }
+
+            $state['step'] = 'collect_delivery_details_shalom';
+            $client->update(['state' => $state]);
+            $this->updateClientAndBroadcast($client, [
+                'status' => 'PAGO RECIBIDO',
+                'priority' => 'ALTA',
+                'payment_receipt_url' => $url,
+                'paid_amount' => $detectedAmount,
+            ]);
             $this->reply($client,
-                "¡Recibí tu comprobante! ✅ Voy a verificarlo en unos minutos y te confirmo el envío de tu pedido {$orderNum}. "
-                . "Gracias por tu compra 💛"
+                "¡Pago recibido, hermosa! ✅\n\n"
+                . "Para enviarlo por Shalom, envíame estos datos en un solo mensaje:\n\n"
+                . "Nombre completo, DNI, celular y sede exacta de Shalom. 🚚"
             );
         } catch (\Throwable $e) {
             Log::error('capturePaymentReceipt failed: ' . $e->getMessage());
             $this->reply($client, "Recibí tu comprobante pero hubo un problema técnico al guardarlo 😅. Un asesor lo revisará personalmente en breve.");
-            $client->update(['status' => 'NECESITA ASESOR', 'priority' => 'ALTA']);
+            $this->updateClientAndBroadcast($client, ['status' => 'NECESITA ASESOR', 'priority' => 'ALTA']);
         }
     }
 
@@ -1184,20 +1408,116 @@ PROMPT;
         }
     }
 
+    protected function findDeliveryZoneFromText(string $text): ?DeliveryZone
+    {
+        $direct = DeliveryZone::findByName($text);
+        if ($direct) return $direct;
+
+        foreach (DeliveryZone::where('active', true)->get() as $zone) {
+            if (str_contains($this->intent->normalize($text), $this->intent->normalize($zone->district))) {
+                return $zone;
+            }
+        }
+
+        return null;
+    }
+
+    protected function getOrderProductTotal(array $state): float
+    {
+        $product = !empty($state['product_id']) ? Product::find($state['product_id']) : null;
+        if (!$product) return 89.00;
+
+        $price = (float) $product->price;
+        if (!empty($product->discount_percent) && $product->discount_percent > 0) {
+            $price = round($price * (1 - $product->discount_percent / 100), 2);
+        }
+
+        return $price * max(1, (int) ($state['quantity'] ?? 1));
+    }
+
+    protected function getExpectedPaymentAmount(array $state): float
+    {
+        $amount = $this->getOrderProductTotal($state);
+        if (($state['shipping'] ?? null) === 'Shalom') {
+            $amount += (float) ($state['shipping_cost'] ?? IntentDetector::getShalomLima());
+        }
+
+        return round($amount, 2);
+    }
+
+    protected function extractPaymentAmountFromReceipt(string $binary): ?float
+    {
+        $base64 = $this->imageService->toBase64($binary);
+        $prompt = "Analiza esta imagen como comprobante de Yape/Plin. Devuelve SOLO JSON estricto: "
+            . "{\"is_receipt\":true|false,\"amount\":numero|null}. "
+            . "Si no puedes leer el monto con claridad, usa amount:null.";
+
+        $raw = $this->geminiService->analyzeImage($base64, $prompt);
+        $data = json_decode($this->cleanJsonResponse($raw), true);
+
+        if (!is_array($data) || empty($data['is_receipt']) || !isset($data['amount']) || !is_numeric($data['amount'])) {
+            return null;
+        }
+
+        return round((float) $data['amount'], 2);
+    }
+
+    protected function finalizePaidOrder(Client $client, array $state): void
+    {
+        if (empty(trim($state['delivery_details'] ?? ''))) {
+            $this->reply($client, "Hermosa, necesito los datos completos para programar tu pedido por favor 💕");
+            return;
+        }
+
+        $this->completeOrder($client, $state);
+    }
+
+    protected function formatVariantsForCustomer(Product $product): string
+    {
+        $available = $product->variants->where('stock', '>', 0);
+        if ($available->isEmpty()) {
+            return "por ahora sin stock disponible";
+        }
+
+        return $available
+            ->groupBy('color')
+            ->map(function ($variants, $color) {
+                $sizes = $variants->pluck('size')->unique()->sort()->values()->implode(', ');
+                return "{$color} en tallas {$sizes}";
+            })
+            ->values()
+            ->join('; ');
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // UTILITIES
     // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Update client fields AND broadcast a ClientStatusUpdated event so the CRM dashboard
+     * refreshes in realtime. Use this whenever the bot changes the client's status/priority.
+     */
+    protected function updateClientAndBroadcast(Client $client, array $data): void
+    {
+        $client->update($data);
+        // Only broadcast when status or priority changed (avoids noise on state-only updates)
+        if (array_key_exists('status', $data) || array_key_exists('priority', $data)) {
+            broadcast(new ClientStatusUpdated($client->fresh()))->toOthers();
+        }
+    }
 
     protected function reply(Client $client, string $body): void
     {
         $this->whatsAppService->sendMessage($client->phone, $body);
 
-        Message::create([
+        $msg = Message::create([
             'client_id' => $client->id,
             'from_me'   => true,
             'body'      => $body,
             'type'      => 'text',
         ]);
+
+        broadcast(new MessageReceived($msg))->toOthers();
 
         // SLA: stamp first response time only once.
         $this->touchFirstResponseAt($client);
@@ -1220,6 +1540,15 @@ PROMPT;
         }
 
         $this->whatsAppService->sendInteractiveButtons($client->phone, $bodyText, $buttons);
+
+        $msg = Message::create([
+            'client_id' => $client->id,
+            'from_me'   => true,
+            'body'      => $bodyText . "\n\n[Botones: " . implode(', ', $buttonTitles) . ']',
+            'type'      => 'text',
+        ]);
+
+        broadcast(new MessageReceived($msg))->toOthers();
     }
 
     /**
@@ -1248,6 +1577,15 @@ PROMPT;
             'Ver categorías',
             $sections
         );
+
+        $msg = Message::create([
+            'client_id' => $client->id,
+            'from_me'   => true,
+            'body'      => "Elige una categoría para ver los productos disponibles 👇\n\n[Categorías: " . $categories->pluck('name')->join(', ') . ']',
+            'type'      => 'text',
+        ]);
+
+        broadcast(new MessageReceived($msg))->toOthers();
     }
 
     /**
@@ -1264,15 +1602,12 @@ PROMPT;
             ? "~S/ " . number_format($product->price, 2) . "~ → *S/ " . number_format($price, 2) . "* 🔥"
             : "S/ " . number_format($price, 2);
 
-        $variantSummary = $product->variants
-            ->groupBy('color')
-            ->map(fn($vs, $color) => $color . ' (' . $vs->pluck('size')->unique()->sort()->implode(', ') . ')')
-            ->implode(' | ');
+        $variantSummary = $this->formatVariantsForCustomer($product);
 
         $body = "*{$product->name}*\n"
               . "{$priceText}\n"
               . ($product->description ? mb_strimwidth($product->description, 0, 80, '…') . "\n" : '')
-              . "Colores/Tallas: {$variantSummary}";
+              . "Disponible en {$variantSummary}";
 
         $buttons = [
             ['type' => 'reply', 'reply' => ['id' => 'buy_' . $product->id, 'title' => 'Lo quiero 💚']],
@@ -1286,6 +1621,15 @@ PROMPT;
             $product->image_url,
             $buttons
         );
+
+        $msg = Message::create([
+            'client_id' => $client->id,
+            'from_me'   => true,
+            'body'      => $body . "\n\n[Producto: {$product->name} - Imagen: {$product->image_url}]",
+            'type'      => 'text',
+        ]);
+
+        broadcast(new MessageReceived($msg))->toOthers();
     }
 
     protected function cleanJsonResponse(?string $text): string
