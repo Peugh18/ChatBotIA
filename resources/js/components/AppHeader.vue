@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import AppLogo from '@/components/AppLogo.vue';
 import AppLogoIcon from '@/components/AppLogoIcon.vue';
+import Breadcrumbs from '@/components/Breadcrumbs.vue';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
@@ -86,7 +87,7 @@ const rightNavItems: NavItem[] = [
 
 <template>
     <div>
-        <div class="border-b border-sidebar-border/80 bg-[#111b21] text-[#e9edef]">
+        <div class="border-b border-gray-700 bg-gray-900 text-white">
             <div class="flex h-16 items-center px-6 w-full">
                 <!-- Mobile Menu -->
                 <div class="lg:hidden">
@@ -191,7 +192,7 @@ const rightNavItems: NavItem[] = [
                                 class="relative size-10 w-auto rounded-full p-1 focus-within:ring-2 focus-within:ring-primary"
                             >
                                 <Avatar class="size-8 overflow-hidden rounded-full">
-                                    <AvatarImage :src="auth.user.avatar" :alt="auth.user.name" />
+                                    <AvatarImage v-if="auth.user?.avatar" :src="auth.user.avatar" :alt="auth.user.name" />
                                     <AvatarFallback class="rounded-lg bg-neutral-200 font-semibold text-black dark:bg-neutral-700 dark:text-white">
                                         {{ getInitials(auth.user?.name) }}
                                     </AvatarFallback>
@@ -206,8 +207,8 @@ const rightNavItems: NavItem[] = [
             </div>
         </div>
 
-        <div v-if="props.breadcrumbs.length > 1" class="flex w-full border-b border-sidebar-border/70 bg-[#0b141a]">
-            <div class="flex h-12 w-full items-center justify-start px-6 text-[#8696a0]">
+        <div v-if="props.breadcrumbs.length > 1" class="flex w-full border-b border-gray-700 bg-gray-800">
+            <div class="flex h-12 w-full items-center justify-start px-6 text-gray-300">
                 <Breadcrumbs :breadcrumbs="breadcrumbs" />
             </div>
         </div>

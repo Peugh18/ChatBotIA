@@ -40,12 +40,15 @@ return [
         'business_phone' => env('BUSINESS_PHONE'),
         'api_version' => env('API_VERSION', 'v18.0'),
         'webhook_verify_token' => env('WEBHOOK_VERIFY_TOKEN'),
+        'app_secret' => env('WHATSAPP_APP_SECRET'),
+        // true = procesa el webhook en el mismo request (útil en local sin queue:work)
+        'sync_webhooks' => env('WHATSAPP_SYNC_WEBHOOKS', false),
     ],
 
     'gemini' => [
         'api_key' => env('GEMINI_API_KEY'),
-        'model' => env('GEMINI_MODEL', 'gemini-2.5-flash'),
-        'fallback_model' => env('GEMINI_FALLBACK_MODEL', 'gemini-2.5-flash-lite'),
+        'model' => env('GEMINI_MODEL', 'gemini-2.0-flash-exp'),
+        'fallback_model' => env('GEMINI_FALLBACK_MODEL', 'gemini-1.5-flash-latest'),
     ],
 
 ];

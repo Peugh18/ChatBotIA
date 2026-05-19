@@ -17,6 +17,14 @@ class DeliveryZone extends Model
         'active'          => 'boolean',
     ];
 
+    public function save(array $options = [])
+    {
+        if (empty($this->slug) && !empty($this->district)) {
+            $this->slug = static::makeSlug($this->district);
+        }
+        return parent::save($options);
+    }
+
     /** Normalize a district name to its slug form (ASCII, lowercase, dashes). */
     public static function makeSlug(string $name): string
     {

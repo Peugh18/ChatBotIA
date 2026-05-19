@@ -5,7 +5,7 @@ namespace App\Jobs;
 use App\Models\Order;
 use App\Models\AutomationLog;
 use App\Models\Message;
-use App\Services\WhatsAppService;
+use App\Services\Messaging\WhatsAppService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -17,7 +17,7 @@ class PostSaleFollowUpJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    public function handle(WhatsAppService $wa): void
+    public function handle(\App\Services\Messaging\WhatsAppMessageService $waMsg): void
     {
         // Orders delivered in the last 24h that haven't had a post-sale message
         $orders = Order::with('client')
@@ -32,9 +32,8 @@ class PostSaleFollowUpJob implements ShouldQueue
             if (!$client || empty($client->phone)) continue;
 
             try {
-                if (!$client->canReceiveAutomation()) {
-                    $this->logAutomation($client, 'blocked', null, 'outside_24h_or_opted_out_or_limit', ['order_id' => $order->id]);
-                    Log::info("Post-sale follow-up skipped for {$client->phone}: outside 24h window, opted out, or follow-up limit reached.");
+                if ($client->opted_out_at !== null || ($client->followup_count ?? 0) >= 3) {
+                    $this->logAutomation($client, 'blocked', null, 'opted_out_or_limit_reached', ['order_id' => $order->id]);
                     continue;
                 }
 
@@ -42,13 +41,25 @@ class PostSaleFollowUpJob implements ShouldQueue
                      . "¿Quedaste contento/a con tu compra? Tu opinión nos importa mucho 💬\n"
                      . "Y si quieres ver nuestras novedades, solo escríbenos 'catálogo' aquí mismo. 🛍️";
 
-                $wa->sendMessage($client->phone, $msg);
-                Message::create([
-                    'client_id' => $client->id,
-                    'from_me' => true,
-                    'body' => $msg,
-                    'type' => 'text',
-                ]);
+                if (!$client->canReceiveFreeformWhatsApp()) {
+                    // Ventana de 24h cerrada, usar plantilla
+                    $templateName = 'post_venta_1';
+                    $success = $waMsg->sendTemplateMessage($client, $templateName, 'es', [
+                        [
+                            'type' => 'body',
+                            'parameters' => [['type' => 'text', 'text' => $client->name ?? 'hermosa']]
+                        ]
+                    ]);
+                    
+                    if (!$success) {
+                        $this->logAutomation($client, 'failed', null, 'template_failed', ['order_id' => $order->id]);
+                        continue;
+                    }
+                } else {
+                    // Ventana abierta, mensaje libre
+                    $waMsg->reply($client, $msg);
+                }
+
                 $client->update([
                     'status' => 'FINALIZADO',
                     'last_followup_at' => now(),

@@ -50,7 +50,7 @@ class DeliveryZoneSeeder extends Seeder
             ['Cieneguilla',             30],
 
             // ── Lima Sur ───────────────────────────────────────────────────
-            ['Barranco',                1],
+            ['Barranco',                15],
             ['Chorrillos',              15],
             ['Lurín',                   30],
             ['Pachacámac',              30],

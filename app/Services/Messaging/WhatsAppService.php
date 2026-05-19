@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services;
+namespace App\Services\Messaging;
 
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -74,6 +74,30 @@ class WhatsAppService
         } catch (\Exception $e) {
             Log::error('Error al marcar el mensaje como leído: ' . $e->getMessage());
         }
+    }
+
+    /**
+     * Send reply buttons from simple title strings (max 3).
+     */
+    public function sendButtons(string $to, string $bodyText, array $buttonTitles): void
+    {
+        $buttons = [];
+        foreach ($buttonTitles as $idx => $title) {
+            $buttons[] = [
+                'type' => 'reply',
+                'reply' => [
+                    'id' => 'btn_' . $idx,
+                    'title' => mb_substr($title, 0, 20),
+                ],
+            ];
+        }
+
+        $this->sendInteractiveButtons($to, $bodyText, $buttons);
+    }
+
+    public function sendImage(string $to, string $imageUrl, ?string $caption = null): void
+    {
+        $this->sendMediaMessage($to, 'image', $imageUrl, $caption);
     }
 
     public function sendInteractiveButtons($to, $bodyText, $buttons)
@@ -236,6 +260,45 @@ class WhatsAppService
             }
         } catch (\Exception $e) {
             Log::error('Error al enviar el mensaje multimedia: ' . $e->getMessage());
+        }
+    }
+
+    public function sendTemplate($to, $templateName, $language = 'es', $components = [])
+    {
+        try {
+            if (empty($templateName)) {
+                Log::error('El nombre del template es requerido');
+                return;
+            }
+
+            $url = "https://graph.facebook.com/{$this->apiVersion}/{$this->businessPhone}/messages";
+
+            $data = [
+                'messaging_product' => 'whatsapp',
+                'to' => $to,
+                'type' => 'template',
+                'template' => [
+                    'name' => $templateName,
+                    'language' => ['code' => $language],
+                ],
+            ];
+
+            if (!empty($components)) {
+                $data['template']['components'] = $components;
+            }
+
+            $response = Http::withToken($this->apiToken)->post($url, $data);
+
+            if ($response->successful()) {
+                Log::info("Template {$templateName} enviado con éxito a {$to}");
+                return true;
+            } else {
+                Log::error("Error al enviar el template {$templateName}: " . $response->body());
+                return false;
+            }
+        } catch (\Exception $e) {
+            Log::error("Error al enviar el template {$templateName}: " . $e->getMessage());
+            return false;
         }
     }
 }

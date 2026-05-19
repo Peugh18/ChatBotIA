@@ -1,12 +1,64 @@
 <?php
 
-namespace App\Services;
+namespace App\Services\Business;
 
 use App\Models\Product;
+use App\Services\AI\IntentService;
 use Illuminate\Support\Collection;
 
 class ProductSearchService
 {
+    public function __construct(
+        protected IntentService $intent
+    ) {}
+
+    /**
+     * Product with stock — only IDs from this method are valid for sales.
+     */
+    public function findAvailable(int $productId): ?Product
+    {
+        return Product::with(['variants', 'category'])
+            ->where('id', $productId)
+            ->whereHas('variants', fn ($q) => $q->where('stock', '>', 0))
+            ->first();
+    }
+
+    /**
+     * Search inventory from free text + optional category filter in client state.
+     */
+    public function searchFromMessage(string $text, array $state = []): Collection
+    {
+        $filters = $this->intent->extractProductFilters($text);
+
+        if (!empty($state['category_id'])) {
+            $filters['category_id'] = (int) $state['category_id'];
+        }
+
+        $trimmed = trim($text);
+        if (mb_strlen($trimmed) >= 2 && empty($filters['name']) && empty($filters['color'])) {
+            $filters['query'] = $trimmed;
+        }
+
+        return $this->search($filters);
+    }
+
+    /**
+     * Map image-analysis attributes to catalog search.
+     */
+    public function searchFromImageAttributes(array $attributes): Collection
+    {
+        $filters = [];
+        foreach (['name', 'color', 'size', 'category'] as $key) {
+            if (!empty($attributes[$key])) {
+                $filters[$key] = $attributes[$key];
+            }
+        }
+        if (!empty($attributes['keywords']) && is_array($attributes['keywords'])) {
+            $filters['query'] = implode(' ', $attributes['keywords']);
+        }
+
+        return $this->search($filters);
+    }
     /**
      * Dynamic multi-filter product search.
      * Filters: name, category, min_price, max_price, color, size
@@ -16,12 +68,23 @@ class ProductSearchService
         $query = Product::with(['variants', 'category'])
             ->whereHas('variants', fn($q) => $q->where('stock', '>', 0));
 
+        if (!empty($filters['category_id'])) {
+            $query->where('category_id', (int) $filters['category_id']);
+        }
+
+        if (!empty($filters['query'])) {
+            $q = $filters['query'];
+            $query->where(fn ($sq) => $sq
+                ->where('name', 'like', "%{$q}%")
+                ->orWhere('description', 'like', "%{$q}%")
+                ->orWhere('sku', 'like', "%{$q}%"));
+        }
+
         if (!empty($filters['name'])) {
             $q = $filters['name'];
-            $query->where(fn($sq) =>
-                $sq->where('name', 'like', "%{$q}%")
-                   ->orWhere('description', 'like', "%{$q}%")
-            );
+            $query->where(fn ($sq) => $sq
+                ->where('name', 'like', "%{$q}%")
+                ->orWhere('description', 'like', "%{$q}%"));
         }
 
         if (!empty($filters['category'])) {
@@ -86,18 +149,40 @@ class ProductSearchService
     /**
      * Full catalog for the AI system prompt context.
      */
-    public function getCatalogForContext(): string
+    public function getCatalogForContext(int $maxProducts = 15): string
     {
         $products = Product::with(['variants', 'category'])
-            ->whereHas('variants', fn($q) => $q->where('stock', '>', 0))
+            ->whereHas('variants', fn ($q) => $q->where('stock', '>', 0))
             ->orderByDesc('sales_count')
+            ->limit($maxProducts)
             ->get();
 
         if ($products->isEmpty()) {
-            return 'Catálogo vacío — no hay productos con stock.';
+            return 'INVENTARIO VACÍO: no hay productos con stock. No ofrezcas ningún producto; pide al cliente esperar o escalar a asesor.';
         }
 
         return $this->formatForPrompt($products);
+    }
+
+    public function formatProductListForChat(Collection $products): string
+    {
+        if ($products->isEmpty()) {
+            return '';
+        }
+
+        return $products->map(function ($product) {
+            $price = $this->effectivePrice($product);
+            return "• *{$product->name}* — S/ " . number_format($price, 2) . " [ID:{$product->id}]";
+        })->join("\n");
+    }
+
+    protected function effectivePrice(Product $product): float
+    {
+        if (!empty($product->discount_percent) && $product->discount_percent > 0) {
+            return round((float) $product->price * (1 - $product->discount_percent / 100), 2);
+        }
+
+        return (float) $product->price;
     }
 
     /**

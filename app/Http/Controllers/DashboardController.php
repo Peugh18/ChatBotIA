@@ -15,7 +15,7 @@ use App\Models\ProductVariant;
 use App\Models\QuickReply;
 use App\Models\Tag;
 use App\Models\User;
-use App\Services\WhatsAppService;
+use App\Services\Messaging\WhatsAppService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -186,9 +186,15 @@ class DashboardController extends Controller
         // Promedia minutos entre creación del cliente y first_response_at.
         $tfrMinutes = null;
         if (Schema::hasColumn('clients', 'first_response_at')) {
+            $driver = DB::getDriverName();
+            if ($driver === 'sqlite') {
+                $selectSql = 'AVG((strftime("%s", first_response_at) - strftime("%s", created_at)) / 60) as avg_min';
+            } else {
+                $selectSql = 'AVG(TIMESTAMPDIFF(MINUTE, created_at, first_response_at)) as avg_min';
+            }
             $tfrMinutes = (float) DB::table('clients')
                 ->whereNotNull('first_response_at')
-                ->selectRaw('AVG(TIMESTAMPDIFF(MINUTE, created_at, first_response_at)) as avg_min')
+                ->selectRaw($selectSql)
                 ->value('avg_min');
             $tfrMinutes = $tfrMinutes ? round($tfrMinutes, 1) : null;
         }
