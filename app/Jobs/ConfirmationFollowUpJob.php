@@ -5,7 +5,7 @@ namespace App\Jobs;
 use App\Models\Client;
 use App\Models\AutomationLog;
 use App\Models\Message;
-use App\Services\WhatsAppService;
+use App\Services\Messaging\WhatsAppService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -54,7 +54,7 @@ class ConfirmationFollowUpJob implements ShouldQueue
                 }
 
                 if ($this->shouldSendFifteenMinuteFollowUp($client)) {
-                    $body = 'Muchas gracias hermosa, cualquier cosita si te animas más tarde nos escribes. Que tengas un gran día';
+                    $body = 'Muchas gracias hermosa, cualquier cosita si te animas más tarde nos escribes. Que tengas un gran día 🤗🤗';
                     $this->send($wa, $client, $body);
                     $client->forceFill([
                         'followup_15_sent_at' => now(),

@@ -1,18 +1,15 @@
 <?php
 
-namespace App\Services;
+namespace App\Services\AI;
 
 use App\Models\DeliveryZone;
-use App\Models\Product;
 use App\Models\Setting;
 
 /**
- * Local NLP-lite detector. Avoids hitting Gemini for trivial messages
- * (greetings, FAQs, intents) — saves quota, latency and money.
- *
- * Returns ['type' => string, ...payload] or null to fall through to AI.
+ * Intent Service - Detección de intenciones y configuración del negocio.
+ * Fusiona funcionalidades de IntentDetector e IntentDetectionService.
  */
-class IntentDetector
+class IntentService
 {
     /** Fallback defaults (used if settings table is empty) */
     public const BUSINESS_HOURS  = 'Lunes a Sábado de 10:00 a.m. a 8:00 p.m.';
@@ -21,6 +18,8 @@ class IntentDetector
     public const SHALOM_LIMA     = 10;
     public const SHALOM_PROVINCIA = 12;
     public const MOTORIZADO_WINDOW = 'Lunes a Sábado de 5 p.m. a 9 p.m.';
+
+    // ── Configuration Methods (from IntentDetector) ──────────────────────────────
 
     public static function getBusinessHours(): string
     {
@@ -51,6 +50,8 @@ class IntentDetector
     {
         return Setting::get('motorizado_window', self::MOTORIZADO_WINDOW);
     }
+
+    // ── Intent Detection Methods (from IntentDetector) ───────────────────────────
 
     /**
      * @return array{type:string, message?:string}|null
@@ -93,7 +94,6 @@ class IntentDetector
         }
 
         // 5b) Consulta de costo de delivery por distrito.
-        // Solo dispara si el mensaje menciona delivery/envío Y un distrito conocido.
         if ($this->containsAny($t, ['delivery', 'envio', 'envío', 'costo', 'cuanto cuesta', 'cuánto cuesta', 'motorizado', 'shalom'])) {
             $zone = $this->findDistrictMention($text);
             if ($zone) {
@@ -103,7 +103,13 @@ class IntentDetector
         }
 
         // 6) Pide catálogo / listado
-        if ($this->containsAny($t, ['catalogo', 'catálogo', 'que tienen', 'qué tienen', 'que venden', 'qué venden', 'que productos', 'qué productos', 'muestrame', 'muéstrame', 'lista de productos'])) {
+        if ($this->containsAny($t, [
+            'catalogo', 'catálogo', 'que tienen', 'qué tienen', 'que venden', 'qué venden',
+            'que vendes', 'qué vendes', 'que vende', 'qué vende', 'que paso', 'qué paso',
+            'que productos', 'qué productos', 'que tienes', 'qué tienes', 'que hay', 'qué hay',
+            'muestrame', 'muéstrame', 'ver catalogo', 'ver catálogo', 'lista de productos',
+            'precios', 'modelos disponibles',
+        ])) {
             return ['type' => 'catalog_request'];
         }
 
@@ -115,12 +121,91 @@ class IntentDetector
             return ['type' => 'thanks'];
         }
 
-        // 8) Confirmaciones simples cuando el bot acaba de ofrecer algo
-        // (Estas las maneja el flujo IA si hay state.product_id, no las
-        //  resolvemos aquí para no romper contexto.)
-
         return null; // fall through to AI
     }
+
+    // ── Pattern Detection Methods (from IntentDetectionService) ─────────────────
+
+    /**
+     * Detect if the client is asking for a confirmation.
+     */
+    public function looksLikeConfirmationRequest(string $message): bool
+    {
+        $t = mb_strtolower(trim($message));
+        $keywords = ['confirmar', 'confirmación', 'si', 'sí', 'ok', 'dale', 'listo', 'ya', 'adelante', 'proceder', 'compro', 'quiero'];
+        foreach ($keywords as $k) {
+            if (str_contains($t, $k)) return true;
+        }
+
+        // Short ambiguous words: only match as standalone tokens (word boundary).
+        if (preg_match('/(^|[^\p{L}])(sí|si|claro|dale|ok|okey|listo|compro|quiero)([^\p{L}]|$)/u', $t)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Detect if the client is expressing a buy intent.
+     */
+    public function looksLikeBuyIntent(string $text): bool
+    {
+        $t = mb_strtolower(trim($text));
+
+        if (preg_match('/\b(lo quiero|me lo llevo|compro|comprar|dame ese|apartar|reservar|sí lo quiero|si lo quiero)\b/u', $t)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Client confirmed they want to proceed with the product in context.
+     */
+    public function looksLikeOrderConfirmation(string $text): bool
+    {
+        $t = mb_strtolower(trim($text));
+
+        if (preg_match('/\b(sí|si|dale|ok|okey|listo|confirmo|adelante|sí quiero|si quiero|lo quiero|compro|de acuerdo)\b/u', $t)) {
+            return true;
+        }
+
+        return str_contains($t, 'sí, lo quiero') || str_contains($t, 'si, lo quiero');
+    }
+
+    public function looksLikeRejection(string $text): bool
+    {
+        $t = mb_strtolower(trim($text));
+
+        return (bool) preg_match('/\b(no|todavía no|aun no|aún no|ver otros|otro modelo|otra opción|después|luego)\b/u', $t);
+    }
+
+    /**
+     * Detect if the client is asking for a photo/image of the product.
+     */
+    public function looksLikePhotoRequest(string $text): bool
+    {
+        $keywords = ['foto', 'imagen', 'ver foto', 'muestrame foto', 'muéstrame foto', 'fotos', 'imágenes', 'ver imagen', 'mandame foto', 'mándame foto', 'pasame foto', 'pásame foto', 'envia foto', 'envía foto'];
+        foreach ($keywords as $k) {
+            if (str_contains(mb_strtolower($text), $k)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Detect if the client is promising to send a photo.
+     */
+    public function looksLikePhotoPromise(string $message): bool
+    {
+        $t = mb_strtolower(trim($message));
+        $keywords = ['ahora te la paso', 'ahora te la mando', 'en un momento', 'luego te la paso', 'luego te la mando', 'te la envío', 'te la envio'];
+        foreach ($keywords as $k) {
+            if (str_contains($t, $k)) return true;
+        }
+        return false;
+    }
+
+    // ── Product Filter Extraction (from IntentDetector) ───────────────────────
 
     /**
      * Extract product filters from a free-text message for sub-catalog search.
@@ -131,7 +216,7 @@ class IntentDetector
         $t = $this->normalize($text);
         $filters = [];
 
-        // Colors (extiende según tu inventario real)
+        // Colors
         $colorMap = [
             'negro' => 'negro', 'blanco' => 'blanco', 'rojo' => 'rojo',
             'azul' => 'azul', 'celeste' => 'celeste', 'verde' => 'verde',
@@ -169,12 +254,12 @@ class IntentDetector
         ];
         foreach ($categoryHints as $key => $val) {
             if (preg_match('/\b' . preg_quote($key, '/') . '\b/u', $t)) {
-                $filters['name'] = $val; // search en name/description
+                $filters['name'] = $val;
                 break;
             }
         }
 
-        // Rangos de precio: "hasta 80", "menos de 100", "máximo 120"
+        // Rangos de precio
         if (preg_match('/(?:hasta|menos\s+de|maximo|máximo|max)\s+(?:s\/\s*)?(\d{1,5})/u', $t, $m)) {
             $filters['max_price'] = (int) $m[1];
         }
@@ -191,14 +276,12 @@ class IntentDetector
 
     /**
      * Try to match a district name from the message against the delivery_zones table.
-     * Returns the matching DeliveryZone (or null).
      */
     public function findDistrictMention(string $text): ?DeliveryZone
     {
         $t = $this->normalize($text);
         if ($t === '') return null;
 
-        // Tokenize into candidate phrases (up to 4 words) and lookup by slug fragment.
         $words = preg_split('/\s+/u', $t) ?: [];
         $candidates = [];
         $n = count($words);
@@ -217,10 +300,9 @@ class IntentDetector
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
-    public function normalize(string $text): string
+    protected function normalize(string $text): string
     {
         $text = mb_strtolower(trim($text), 'UTF-8');
-        // collapse whitespace
         return preg_replace('/\s+/u', ' ', $text);
     }
 

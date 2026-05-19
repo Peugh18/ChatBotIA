@@ -8,6 +8,7 @@ class Client extends Model
 {
     protected $fillable = [
         'phone', 'name', 'status', 'priority', 'assigned_user_id',
+        'bot_paused_at',
         'last_interaction_at', 'last_customer_message_at', 'first_response_at', 'confirmation_requested_at',
         'followup_3_sent_at', 'followup_15_sent_at', 'followup_stopped_at', 'last_followup_at',
         'followup_count', 'opted_out_at',
@@ -19,6 +20,7 @@ class Client extends Model
     protected $casts = [
         'state'                      => 'array',
         'preferences'                => 'array',
+        'bot_paused_at'              => 'datetime',
         'last_interaction_at'        => 'datetime',
         'last_customer_message_at'   => 'datetime',
         'first_response_at'          => 'datetime',

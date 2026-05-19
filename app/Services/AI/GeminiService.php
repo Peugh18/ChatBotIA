@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services;
+namespace App\Services\AI;
 
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -51,22 +51,18 @@ class GeminiService
 
         $json = $this->postToGemini('generateContent', $data);
 
-        // If primary model hit quota, try fallback model (separate free-tier quota)
-        if (!$json && $this->lastErrorCode === 'quota') {
-            $fallbackModel = 'gemini-1.5-flash-latest';
-            Log::info("Gemini primary model quota exhausted. Trying fallback model: {$fallbackModel}");
-            $json = $this->postToGeminiWithModel($fallbackModel, 'generateContent', $data);
-            if ($json) {
-                Log::info("Gemini fallback model succeeded.");
-            }
-        }
-
         return $json['candidates'][0]['content']['parts'][0]['text'] ?? null;
     }
 
     /**
      * Analyze an image alongside a text prompt.
      */
+    /** @alias analyzeImage */
+    public function vision(string $imageBase64, string $prompt): ?string
+    {
+        return $this->analyzeImage($imageBase64, $prompt);
+    }
+
     public function analyzeImage(string $imageBase64, string $prompt): ?string
     {
         $data = [
@@ -84,11 +80,24 @@ class GeminiService
     }
 
     /**
-     * Robust HTTP POST wrapper with automatic Rate Limit (429) retries and exponential backoff.
+     * Robust HTTP POST wrapper with automatic Rate Limit (429) retries, exponential backoff, and fallback model.
      */
     protected function postToGemini(string $endpoint, array $data, int $maxRetries = 3, int $initialDelayMs = 1500): ?array
     {
-        return $this->postToGeminiWithModel($this->model, $endpoint, $data, $maxRetries, $initialDelayMs);
+        $json = $this->postToGeminiWithModel($this->model, $endpoint, $data, $maxRetries, $initialDelayMs);
+
+        if (!$json && in_array($this->lastErrorCode, ['quota', 'auth', 'error'], true)) {
+            $fallbackModel = config('services.gemini.fallback_model', 'gemini-1.5-flash-latest');
+            if ($fallbackModel !== $this->model) {
+                Log::info("Gemini primary model failed ({$this->lastErrorCode}). Trying fallback: {$fallbackModel}");
+                $json = $this->postToGeminiWithModel($fallbackModel, $endpoint, $data, $maxRetries, $initialDelayMs);
+                if ($json) {
+                    Log::info('Gemini fallback model succeeded.');
+                }
+            }
+        }
+
+        return $json;
     }
 
     /**

@@ -17,6 +17,9 @@ Artisan::command('inspire', function () {
 // Run every minute: re-engage clients who didn't reply to order confirmation
 Schedule::job(new ConfirmationFollowUpJob)->everyMinute()->withoutOverlapping();
 
+// Run every minute: re-engage clients who didn't provide shipping details
+Schedule::job(new \App\Jobs\ShippingDataFollowUpJob)->everyMinute()->withoutOverlapping();
+
 // Run every 2 hours: recover clients who abandoned their cart
 Schedule::job(new AbandonedCartFollowUpJob)->everyTwoHours()->withoutOverlapping();
 

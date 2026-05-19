@@ -2,19 +2,12 @@
 
 namespace App\Http\Controllers;
 
-use App\Services\MessageHandler;
+use App\Jobs\ProcessWhatsAppWebhook;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
 class WhatsAppController extends Controller
 {
-    protected $messageHandler;
-
-    public function __construct(MessageHandler $messageHandler)
-    {
-        $this->messageHandler = $messageHandler;
-    }
-
     public function verify(Request $request)
     {
         $mode = $request->input('hub_mode') ?? $request->input('hub.mode');
@@ -41,14 +34,12 @@ class WhatsAppController extends Controller
             $body = json_decode($rawBody, true, 512, JSON_THROW_ON_ERROR);
             Log::info('WhatsApp Webhook: ' . $rawBody);
 
-            $entry = $body['entry'][0] ?? null;
-            $changes = $entry['changes'][0] ?? null;
-            $value = $changes['value'] ?? null;
-            $messageData = $value['messages'][0] ?? null;
-            $contactData = $value['contacts'][0] ?? null;
-
-            if ($messageData) {
-                $this->messageHandler->process($messageData, $contactData);
+            // Procesar en cola "default" (el worker de dev solo escuchaba default).
+            // En local, opcionalmente síncrono para no depender del worker.
+            if (config('services.whatsapp.sync_webhooks', false)) {
+                ProcessWhatsAppWebhook::dispatchSync($body);
+            } else {
+                ProcessWhatsAppWebhook::dispatch($body);
             }
 
             return response('EVENT_RECEIVED', 200);
