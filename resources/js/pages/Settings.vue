@@ -30,7 +30,7 @@ function save() {
 
         <div class="min-h-[calc(100vh-4rem)] bg-gray-900 p-6 text-gray-100">
             <div class="mx-auto max-w-4xl">
-                <div class="rounded-2xl border border-gray-700 bg-gray-800 p-6 shadow-xl">
+                <div class="rounded-2xl border border-gray-700 bg-gray-800 p-6">
                     <div class="mb-6 flex items-center justify-between">
                         <div>
                             <h1 class="text-2xl font-bold flex items-center gap-2">

@@ -18,36 +18,74 @@ class WhatsAppService
         $this->apiToken = config('services.whatsapp.api_token');
     }
 
-    public function sendMessage($to, $body, $messageId = null)
+    public function sendMessage($to, $body, $messageId = null): ?string
     {
         try {
             if (empty($body)) {
                 Log::error('El cuerpo del mensaje no puede estar vacío');
-                return;
+
+                return null;
+            }
+
+            $romaEnabled = config('services.roma_api.enabled', false);
+            $romaUrl = config('services.roma_api.url');
+
+            if ($romaEnabled && !empty($romaUrl)) {
+                $url = rtrim($romaUrl, '/') . '/api/messages';
+                $payload = [
+                    'wa_id' => $messageId ?? ('laravel-' . uniqid()),
+                    'sender_phone' => preg_replace('/\D+/', '', $to),
+                    'message_body' => $body,
+                    'direction' => 'outbound',
+                ];
+
+                $headers = [
+                    'Accept' => 'application/json',
+                    'Content-Type' => 'application/json',
+                    'ngrok-skip-browser-warning' => 'true',
+                ];
+
+                $token = config('services.roma_api.token');
+                if ($token) {
+                    $headers['X-Roma-Sync-Token'] = $token;
+                }
+
+                $response = Http::timeout(15)
+                    ->withHeaders($headers)
+                    ->post($url, $payload);
+
+                if ($response->successful()) {
+                    Log::info('Mensaje enviado con éxito a través de roma-api');
+                    $data = $response->json();
+                    return $data['wa_id'] ?? $payload['wa_id'];
+                }
+
+                Log::error('Error al enviar el mensaje a través de roma-api: ' . $response->body());
+                return null;
             }
 
             $url = "https://graph.facebook.com/{$this->apiVersion}/{$this->businessPhone}/messages";
-            
+
             $data = [
                 'messaging_product' => 'whatsapp',
                 'to' => $to,
                 'text' => ['body' => $body],
             ];
 
-            // if ($messageId) {
-            //     $data['context'] = ['message_id' => $messageId];
-            // }
-
             $response = Http::withToken($this->apiToken)->post($url, $data);
 
             if ($response->successful()) {
                 Log::info('Mensaje enviado con éxito');
-            } else {
-                Log::error('Error al enviar el mensaje: ' . $response->body());
+
+                return $response->json('messages.0.id');
             }
+
+            Log::error('Error al enviar el mensaje: ' . $response->body());
         } catch (\Exception $e) {
             Log::error('Error al enviar el mensaje: ' . $e->getMessage());
         }
+
+        return null;
     }
 
     public function markAsRead($messageId)

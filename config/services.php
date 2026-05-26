@@ -51,4 +51,16 @@ return [
         'fallback_model' => env('GEMINI_FALLBACK_MODEL', 'gemini-1.5-flash-latest'),
     ],
 
+    /*
+    | roma-api (Next.js) — antes localhost:3000, ahora ngrok u otro host.
+    | Laravel envía mensajes a POST {url}/api/messages
+    */
+    'roma_api' => [
+        'enabled' => env('ROMA_API_ENABLED', false),
+        'url' => env('ROMA_API_URL'),
+        'token' => env('ROMA_API_TOKEN'),
+        'sync_token' => env('ROMA_SYNC_TOKEN'),
+        'pull_limit' => (int) env('ROMA_API_PULL_LIMIT', 50),
+    ],
+
 ];

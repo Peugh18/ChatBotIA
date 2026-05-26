@@ -18,7 +18,9 @@ Route::get('/', function () {
 Route::middleware(['auth', 'verified'])->group(function () {
     // CRM Chatbot
     Route::get('crm',                              [DashboardController::class, 'index'])->name('crm');
+    Route::post('crm/sync-roma',                   [DashboardController::class, 'syncRoma'])->name('crm.sync-roma');
     Route::get('crm/chat/{client}',                [DashboardController::class, 'show'])->name('crm.chat');
+    Route::get('crm/chat/{client}/poll',           [DashboardController::class, 'pollChat'])->name('crm.chat.poll');
     Route::post('crm/chat/{client}/status',        [DashboardController::class, 'updateStatus'])->name('crm.client.status');
     Route::post('crm/chat/{client}/order',         [DashboardController::class, 'createOrder'])->name('crm.client.order');
     Route::post('crm/chat/{client}/send',          [DashboardController::class, 'sendMessage'])->name('crm.client.send');

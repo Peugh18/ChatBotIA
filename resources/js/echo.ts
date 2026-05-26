@@ -1,23 +1,14 @@
 import Echo from 'laravel-echo';
 import Pusher from 'pusher-js';
 
-const reverbEnabled = import.meta.env.VITE_REVERB_ENABLED === 'true';
-const reverbKey = import.meta.env.VITE_REVERB_APP_KEY as string | undefined;
+(window as any).Pusher = Pusher;
 
-let echo: Echo | null = null;
-
-if (reverbEnabled && reverbKey) {
-    (window as any).Pusher = Pusher;
-
-    echo = new Echo({
-        broadcaster: 'reverb',
-        key: reverbKey,
-        wsHost: import.meta.env.VITE_REVERB_HOST as string,
-        wsPort: (import.meta.env.VITE_REVERB_PORT ?? 8080) as number,
-        wssPort: (import.meta.env.VITE_REVERB_PORT ?? 8080) as number,
-        forceTLS: (import.meta.env.VITE_REVERB_SCHEME ?? 'https') === 'https',
-        enabledTransports: ['ws', 'wss'],
-    });
-}
+const echo = new Echo({
+    broadcaster: 'pusher',
+    key: import.meta.env.VITE_PUSHER_APP_KEY as string,
+    cluster: (import.meta.env.VITE_PUSHER_APP_CLUSTER ?? 'us2') as string,
+    forceTLS: true,
+    enabledTransports: ['ws', 'wss'],
+});
 
 export default echo;

@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\RomaMessageIngestController;
 use App\Http\Controllers\WhatsAppController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -12,6 +13,9 @@ Route::get('/user', function (Request $request) {
 
 Route::get('/webhook', [WhatsAppController::class, 'verify']);
 Route::post('/webhook', [WhatsAppController::class, 'handle'])->middleware(VerifyMetaWebhookSignature::class);
+
+// Sincronización desde roma-api (Next.js / ngrok) hacia el CRM Laravel
+Route::post('/api/roma/messages', [RomaMessageIngestController::class, 'ingest']);
 
 // Endpoints para control del Bot
 Route::post('/clients/{client}/pause-bot', [\App\Http\Controllers\ClientBotController::class, 'pauseBot']);

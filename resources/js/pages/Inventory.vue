@@ -2,6 +2,8 @@
 import { Head, Link, useForm } from '@inertiajs/vue3';
 import { ref } from 'vue';
 import AppLayout from '@/layouts/AppLayout.vue';
+import { Button } from '@/components/ui/button';
+import { Card } from '@/components/ui/card';
 import { Package, Plus, Pencil, Trash2, Tag, TrendingUp, X } from 'lucide-vue-next';
 
 interface ProductVariant {
@@ -173,13 +175,13 @@ function deleteProduct(id: number) {
                     <Link :href="route('crm')" class="rounded-lg border border-gray-700 bg-gray-800 px-4 py-2 text-sm text-gray-100 transition-all hover:bg-gray-700">
                         ← Volver al CRM
                     </Link>
-                    <button
+                    <Button variant="primary"
                         @click="openModal()"
                         class="rounded-lg bg-white px-4 py-2 text-sm font-bold text-gray-900 transition-all hover:bg-gray-200 flex items-center gap-2"
                     >
                         <Plus class="w-4 h-4" />
                         Agregar Producto
-                    </button>
+                    </Button>
                 </div>
             </div>
 
@@ -258,20 +260,20 @@ function deleteProduct(id: number) {
                     </div>
                     <div class="p-4 pt-0 border-t border-gray-700 mt-3">
                         <div class="flex gap-2">
-                            <button
+                            <Button variant="primary"
                                 @click="openModal(product)"
                                 class="flex-1 rounded-lg bg-gray-700 px-3 py-1.5 text-xs font-semibold text-white transition-all hover:bg-gray-600 flex items-center justify-center gap-1"
                             >
                                 <Pencil class="w-3 h-3" />
                                 Editar
-                            </button>
-                            <button
+                            </Button>
+                            <Button variant="primary"
                                 @click="deleteProduct(product.id)"
                                 class="flex-1 rounded-lg bg-red-900/20 px-3 py-1.5 text-xs font-semibold text-red-400 transition-all hover:bg-red-900/30 flex items-center justify-center gap-1"
                             >
                                 <Trash2 class="w-3 h-3" />
                                 Eliminar
-                            </button>
+                            </Button>
                         </div>
                     </div>
                 </div>
@@ -283,10 +285,10 @@ function deleteProduct(id: number) {
                     </div>
                     <p class="mt-2 text-lg font-semibold text-white">Sin productos aún</p>
                     <p class="text-sm">Agrega tu primer producto para que la IA pueda venderlo.</p>
-                    <button @click="openModal()" class="mt-4 rounded-lg bg-white px-6 py-2 text-sm font-bold text-gray-900 hover:bg-gray-200 flex items-center gap-2 mx-auto">
+                    <Button variant="primary" @click="openModal()" class="mt-4 rounded-lg bg-white px-6 py-2 text-sm font-bold text-gray-900 hover:bg-gray-200 flex items-center gap-2 mx-auto">
                         <Plus class="w-4 h-4" />
                         Agregar primer producto
-                    </button>
+                    </Button>
                 </div>
             </div>
         </div>
@@ -300,9 +302,9 @@ function deleteProduct(id: number) {
                             <Package class="w-5 h-5" />
                             {{ editingProduct ? 'Editar Producto' : 'Nuevo Producto' }}
                         </h2>
-                        <button @click="closeModal" class="rounded-full p-1 hover:bg-gray-700 text-gray-400 hover:text-white">
+                        <Button variant="primary" @click="closeModal" class="rounded-full p-1 hover:bg-gray-700 text-gray-400 hover:text-white">
                             <X class="w-5 h-5" />
-                        </button>
+                        </Button>
                     </div>
 
                     <form @submit.prevent="submitForm" class="space-y-5 p-6">
@@ -357,10 +359,10 @@ function deleteProduct(id: number) {
                                     <label class="text-sm font-semibold tracking-wider text-white uppercase">Gestión de Colores, Tallas y Stock</label>
                                     <p class="text-xs text-gray-400">Agrega cada color de tu prenda, su foto y las tallas con stock disponibles.</p>
                                 </div>
-                                <button type="button" @click="addColor" class="text-xs text-white font-bold hover:underline bg-white/10 px-3 py-1.5 rounded-lg border border-white/20 transition-all hover:bg-white/20 flex items-center gap-1">
+                                <Button variant="primary" type="button" @click="addColor" class="text-xs text-white font-bold hover:underline bg-white/10 px-3 py-1.5 rounded-lg border border-white/20 transition-all hover:bg-white/20 flex items-center gap-1">
                                     <Plus class="w-3 h-3" />
                                     Agregar Color
-                                </button>
+                                </Button>
                             </div>
 
                             <div class="space-y-4">
@@ -378,20 +380,20 @@ function deleteProduct(id: number) {
                                                 <img v-if="col.image_url" :src="col.image_url" class="h-9 w-9 rounded object-cover border border-gray-600 bg-gray-900" />
                                             </div>
                                         </div>
-                                        <button type="button" @click="removeColor(i)" class="text-xs text-red-400 hover:text-red-300 font-semibold md:self-end md:mb-2 border border-red-500/10 px-2 py-1 rounded hover:bg-red-900/10 transition-all flex items-center gap-1">
+                                        <Button variant="primary" type="button" @click="removeColor(i)" class="text-xs text-red-400 hover:text-red-300 font-semibold md:self-end md:mb-2 border border-red-500/10 px-2 py-1 rounded hover:bg-red-900/10 transition-all flex items-center gap-1">
                                             <Trash2 class="w-3 h-3" />
                                             Eliminar Color
-                                        </button>
+                                        </Button>
                                     </div>
 
                                     <!-- Inner Sizes and Stock Management -->
                                     <div class="bg-gray-800 p-3 rounded-lg border border-dashed border-gray-600 space-y-2">
                                         <div class="flex items-center justify-between mb-1">
                                             <span class="text-xs font-semibold text-gray-400 uppercase tracking-wider">Tallas y Stock disponibles:</span>
-                                            <button type="button" @click="addSize(i)" class="text-xs text-white font-bold hover:underline flex items-center gap-1">
+                                            <Button variant="primary" type="button" @click="addSize(i)" class="text-xs text-white font-bold hover:underline flex items-center gap-1">
                                                 <Plus class="w-3 h-3" />
                                                 Agregar Talla
-                                            </button>
+                                            </Button>
                                         </div>
                                         
                                         <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
@@ -400,9 +402,9 @@ function deleteProduct(id: number) {
                                                     <input v-model="sz.size" type="text" required placeholder="Talla" class="w-20 rounded border border-gray-600 bg-gray-800 px-2 py-1 text-xs text-white focus:ring-1 focus:ring-white" />
                                                     <input v-model.number="sz.stock" type="number" min="0" required placeholder="Stock" class="w-16 rounded border border-gray-600 bg-gray-800 px-2 py-1 text-xs text-white focus:ring-1 focus:ring-white" />
                                                 </div>
-                                                <button type="button" @click="removeSize(i, j)" class="absolute right-2 top-2.5 text-red-400 hover:text-red-300 text-xs">
+                                                <Button variant="primary" type="button" @click="removeSize(i, j)" class="absolute right-2 top-2.5 text-red-400 hover:text-red-300 text-xs">
                                                     <X class="w-3 h-3" />
-                                                </button>
+                                                </Button>
                                             </div>
                                         </div>
                                     </div>
@@ -417,12 +419,12 @@ function deleteProduct(id: number) {
 
                         <!-- Submit -->
                         <div class="flex gap-3 pt-2">
-                            <button type="button" @click="closeModal" class="flex-1 rounded-lg border border-gray-600 bg-gray-700 px-4 py-2 text-sm font-semibold text-white transition-all hover:bg-gray-600">
+                            <Button variant="primary" type="button" @click="closeModal" class="flex-1 rounded-lg border border-gray-600 bg-gray-700 px-4 py-2 text-sm font-semibold text-white transition-all hover:bg-gray-600">
                                 Cancelar
-                            </button>
-                            <button type="submit" :disabled="form.processing" class="flex-1 rounded-lg bg-white px-4 py-2 text-sm font-bold text-gray-900 transition-all hover:bg-gray-200 disabled:opacity-50">
+                            </Button>
+                            <Button variant="primary" type="submit" :disabled="form.processing" class="flex-1 rounded-lg bg-white px-4 py-2 text-sm font-bold text-gray-900 transition-all hover:bg-gray-200 disabled:opacity-50">
                                 {{ form.processing ? 'Guardando...' : (editingProduct ? 'Actualizar Producto' : 'Crear Producto') }}
-                            </button>
+                            </Button>
                         </div>
                     </form>
                 </div>

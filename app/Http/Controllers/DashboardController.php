@@ -15,6 +15,7 @@ use App\Models\ProductVariant;
 use App\Models\QuickReply;
 use App\Models\Tag;
 use App\Models\User;
+use App\Services\Integration\RomaApiService;
 use App\Services\Messaging\WhatsAppService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -30,8 +31,10 @@ class DashboardController extends Controller
         $this->whatsAppService = $whatsAppService;
     }
 
-    public function index()
+    public function index(RomaApiService $romaApi)
     {
+        $this->syncFromRomaApi($romaApi);
+
         $clients      = Client::with('tags')->orderBy('last_interaction_at', 'desc')->get();
         $products     = Product::with(['variants', 'category'])->latest()->get();
         $allTags      = Tag::orderBy('name')->get();
@@ -49,8 +52,10 @@ class DashboardController extends Controller
         ]);
     }
 
-    public function show(Client $client)
+    public function show(Client $client, RomaApiService $romaApi)
     {
+        $this->syncFromRomaApi($romaApi);
+
         $client->load(['tags', 'notes' => fn($q) => $q->latest(), 'notes.user', 'assignedUser']);
 
         $messages = Message::where('client_id', $client->id)
@@ -82,12 +87,13 @@ class DashboardController extends Controller
         ]);
 
         try {
-            $this->whatsAppService->sendMessage($client->phone, $validated['body']);
+            $waId = $this->whatsAppService->sendMessage($client->phone, $validated['body']);
             $msg = Message::create([
-                'client_id' => $client->id,
-                'from_me'   => true,
-                'body'      => $validated['body'],
-                'type'      => 'text',
+                'client_id'       => $client->id,
+                'from_me'         => true,
+                'body'            => $validated['body'],
+                'type'            => 'text',
+                'meta_message_id' => $waId,
             ]);
             broadcast(new MessageReceived($msg))->toOthers();
             broadcast(new ClientStatusUpdated($client->fresh()))->toOthers();
@@ -96,12 +102,66 @@ class DashboardController extends Controller
             if (Schema::hasColumn('clients', 'first_response_at') && empty($client->first_response_at)) {
                 $client->forceFill(['first_response_at' => now()])->save();
             }
+
+            if ($request->wantsJson()) {
+                return response()->json([
+                    'message' => $this->formatMessage($msg),
+                    'client'  => $client->fresh()->only(['id', 'status', 'last_interaction_at']),
+                ]);
+            }
         } catch (\Throwable $e) {
             \Log::error('CRM sendMessage failed: ' . $e->getMessage());
+
+            if ($request->wantsJson()) {
+                return response()->json(['error' => 'No se pudo enviar el mensaje.'], 422);
+            }
+
             return back()->withErrors(['message' => 'No se pudo enviar el mensaje. Revisa la consola.']);
         }
 
         return back()->with('success', 'Mensaje enviado.');
+    }
+
+    /** JSON poll: sync roma-api + devuelve mensajes (sin recargar toda la página). */
+    public function pollChat(Client $client, RomaApiService $romaApi)
+    {
+        $sync = ['imported' => 0, 'skipped' => 0, 'total' => 0];
+        if ($romaApi->isEnabled()) {
+            $sync = $romaApi->pullLatestMessages(
+                (int) config('services.roma_api.pull_limit', 50),
+                $client->phone
+            );
+        }
+
+        $client->load('tags');
+
+        $messages = Message::where('client_id', $client->id)
+            ->orderBy('created_at', 'asc')
+            ->get(['id', 'body', 'from_me', 'created_at']);
+
+        return response()->json([
+            'messages' => $messages->map(fn (Message $m) => $this->formatMessage($m)),
+            'client'   => [
+                'id'     => $client->id,
+                'status' => $client->status,
+                'name'   => $client->name,
+                'phone'  => $client->phone,
+            ],
+            'sync'     => $sync,
+        ]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    protected function formatMessage(Message $message): array
+    {
+        return [
+            'id'         => $message->id,
+            'body'       => $message->body,
+            'from_me'    => (bool) $message->from_me,
+            'created_at' => $message->created_at?->toIso8601String() ?? now()->toIso8601String(),
+        ];
     }
 
     /** Assign (or unassign with null) a vendor user to a client. */
@@ -402,5 +462,29 @@ class DashboardController extends Controller
         }
 
         return back()->with('success', 'Pago rechazado. Se solicitó nuevo comprobante.');
+    }
+
+    public function syncRoma(RomaApiService $romaApi)
+    {
+        if (! $romaApi->isEnabled()) {
+            return back()->withErrors(['roma' => 'roma-api no está habilitado en .env']);
+        }
+
+        $result = $romaApi->pullLatestMessages((int) config('services.roma_api.pull_limit', 50));
+
+        if (isset($result['error'])) {
+            return back()->withErrors(['roma' => $result['error']]);
+        }
+
+        return back()->with('success', "Sincronizado: {$result['imported']} nuevos, {$result['skipped']} ya existían.");
+    }
+
+    protected function syncFromRomaApi(RomaApiService $romaApi): void
+    {
+        if (! $romaApi->isEnabled()) {
+            return;
+        }
+
+        $romaApi->pullLatestMessages((int) config('services.roma_api.pull_limit', 50));
     }
 }

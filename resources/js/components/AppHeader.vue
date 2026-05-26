@@ -36,7 +36,7 @@ const isCurrentRoute = (url: string) => {
     return page.url === url;
 };
 
-const activeItemStyles = computed(() => (url: string) => (isCurrentRoute(url) ? 'text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100' : ''));
+const activeItemStyles = computed(() => (url: string) => (isCurrentRoute(url) ? 'bg-accent text-accent-foreground dark:bg-neutral-800 dark:text-neutral-100' : ''));
 
 const mainNavItems: NavItem[] = [
     {
@@ -87,7 +87,7 @@ const rightNavItems: NavItem[] = [
 
 <template>
     <div>
-        <div class="border-b border-gray-700 bg-gray-900 text-white">
+        <div class="border-b border-border bg-card text-foreground">
             <div class="flex h-16 items-center px-6 w-full">
                 <!-- Mobile Menu -->
                 <div class="lg:hidden">
@@ -207,8 +207,8 @@ const rightNavItems: NavItem[] = [
             </div>
         </div>
 
-        <div v-if="props.breadcrumbs.length > 1" class="flex w-full border-b border-gray-700 bg-gray-800">
-            <div class="flex h-12 w-full items-center justify-start px-6 text-gray-300">
+        <div v-if="props.breadcrumbs.length > 1" class="flex w-full border-b border-border bg-muted/50">
+            <div class="flex h-12 w-full items-center justify-start px-6 text-muted-foreground">
                 <Breadcrumbs :breadcrumbs="breadcrumbs" />
             </div>
         </div>

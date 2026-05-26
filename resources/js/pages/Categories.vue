@@ -67,7 +67,7 @@ function deleteCategory(c: Category) {
         <Head title="Categorías" />
 
         <div class="flex h-[calc(100vh-4rem)] bg-gray-900 font-sans p-6 overflow-hidden text-gray-100">
-            <div class="mx-auto flex h-full w-full max-w-5xl flex-col bg-gray-800 rounded-xl shadow-sm border border-gray-700 overflow-hidden">
+            <div class="mx-auto flex h-full w-full max-w-5xl flex-col bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
                 
                 <div class="p-6 border-b border-gray-700 bg-gray-800 flex justify-between items-center">
                     <h1 class="text-xl font-bold text-white flex items-center gap-2">
@@ -88,7 +88,7 @@ function deleteCategory(c: Category) {
                         <form @submit.prevent="saveCategory" class="space-y-4">
                             <div>
                                 <label class="block text-sm font-medium text-gray-300 mb-1">Nombre</label>
-                                <input v-model="newCategoryName" type="text" class="w-full rounded-md border border-gray-600 bg-gray-800 px-3 py-2 text-sm text-white focus:border-white focus:ring-white" required>
+                                <input v-model="newCategoryName" type="text" class="w-full rounded-md border border-gray-600 bg-gray-900 px-3 py-2 text-sm text-white focus:border-gray-400 focus:ring-gray-400" required>
                             </div>
 
                             <div class="flex gap-2">

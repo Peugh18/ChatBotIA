@@ -34,6 +34,7 @@
         "laravel-echo": "^2.3.4",
         "laravel-vite-plugin": "^1.0",
         "lucide-vue-next": "^1.0.0",
+        "pinia": "^2.1.7",
         "pusher-js": "^8.5.0",
         "radix-vue": "^1.9.17",
         "tailwind-merge": "^2.5.5",

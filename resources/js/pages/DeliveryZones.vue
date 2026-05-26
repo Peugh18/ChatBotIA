@@ -93,7 +93,7 @@ function deleteZone(zone: DeliveryZone) {
 
         <div class="min-h-[calc(100vh-4rem)] bg-gray-900 p-6 text-gray-100">
             <div class="mx-auto grid max-w-7xl gap-6 lg:grid-cols-[360px_1fr]">
-                <section class="rounded-2xl border border-gray-700 bg-gray-800 p-5 shadow-xl">
+                <section class="rounded-2xl border border-gray-700 bg-gray-800 p-5">
                     <div class="mb-5">
                         <p class="text-xs font-bold uppercase tracking-[0.2em] text-white">Roma Store</p>
                         <h1 class="mt-2 text-2xl font-bold flex items-center gap-2">
@@ -168,7 +168,7 @@ function deleteZone(zone: DeliveryZone) {
                     </form>
                 </section>
 
-                <section class="overflow-hidden rounded-2xl border border-gray-700 bg-gray-800 shadow-xl">
+                <section class="overflow-hidden rounded-2xl border border-gray-700 bg-gray-800">
                     <div class="flex items-center justify-between border-b border-gray-700 bg-gray-900 px-5 py-4">
                         <div>
                             <h2 class="text-lg font-bold flex items-center gap-2">
